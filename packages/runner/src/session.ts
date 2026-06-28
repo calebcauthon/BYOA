@@ -9,6 +9,8 @@
  * It does one thing: resolve a backend + provider from the session's settings,
  * run the prompt, emit source-tagged logs + the blackboard output, and return.
  */
+import { join, relative, isAbsolute } from "node:path";
+import { appendFileSync, existsSync } from "node:fs";
 import type { AgentSessionSettings, Blackboard } from "@automations/core";
 import { resolveBackend } from "./backends/index.ts";
 import { resolveProvider } from "./providers/index.ts";
@@ -50,9 +52,23 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
   const { workdir } = await backend.prepare(settings, log);
   log.emit("backend", "info", `backend ready: ${backend.kind}`, { workdir });
 
+  // If our out dir lands inside the working tree, keep it out of git so the
+  // agent never commits our scratch and change-detection isn't fooled by it.
+  // (Prototype lesson — .git/info/exclude.) Local-fs only; sandbox handles its
+  // own isolation.
+  const rel = relative(workdir, outDir);
+  if (rel && !rel.startsWith("..") && !isAbsolute(rel)) {
+    const excludeFile = join(workdir, ".git", "info", "exclude");
+    if (existsSync(excludeFile)) {
+      appendFileSync(excludeFile, `\n${rel}/\n`, "utf8");
+      log.emit("orchestrator", "info", `excluded ${rel}/ from git`);
+    }
+  }
+
+  const sessionDir = join(outDir, "pi-session");
   let output: Blackboard = {};
   try {
-    output = await provider.run({ settings, backend, workdir, prompt, log });
+    output = await provider.run({ settings, backend, workdir, prompt, sessionDir, log });
     log.emit("orchestrator", "info", `session ${sessionId} finished`);
   } catch (err) {
     log.emit("orchestrator", "error", `session ${sessionId} failed: ${String(err)}`);

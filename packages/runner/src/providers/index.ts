@@ -15,6 +15,8 @@ export interface ProviderRunInput {
   workdir: string;
   /** the fully-assembled prompt text */
   prompt: string;
+  /** a directory the runner owns for this session's transcript/session files */
+  sessionDir: string;
   log: SessionLog;
 }
 

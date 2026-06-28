@@ -12,6 +12,19 @@ export interface ExecResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /** true if killed by the wall-clock timeout rather than exiting on its own */
+  timedOut?: boolean;
+}
+
+export interface ExecOpts {
+  cwd?: string;
+  /** piped to the process's stdin (how we feed pi its prompt) */
+  input?: string;
+  /** merged over the ambient environment */
+  env?: Record<string, string>;
+  /** wall-clock kill switch + heartbeat cadence (§2.7) */
+  timeoutMs?: number;
+  heartbeatMs?: number;
 }
 
 export interface Backend {
@@ -19,7 +32,7 @@ export interface Backend {
   /** stand up the execution environment + working tree; return the workdir */
   prepare(settings: AgentSessionSettings, log: SessionLog): Promise<{ workdir: string }>;
   /** run a command in the environment, streaming output to the backend log */
-  exec(cmd: string[], opts: { cwd?: string }, log: SessionLog): Promise<ExecResult>;
+  exec(cmd: string[], opts: ExecOpts, log: SessionLog): Promise<ExecResult>;
   /** tear down (or keep, for debugging) */
   dispose(log: SessionLog): Promise<void>;
 }
