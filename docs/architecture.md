@@ -100,10 +100,18 @@ pressure. The console is a control surface, not a marketing page.
   single trust boundary for everything that touches the outside world, and
   matches what the prototype already does. See §4.
 
-### 2.2 Everything that touches code or a browser runs in a sandbox
-- No app, build, or browser ever runs on the operator's machine. The controller
+### 2.2 Code/browser execution is isolated by default — bare metal is an opt-in backend
+- The default and preferred posture: the app, build, and browser run in an
+  **isolated backend** (cloud sandbox or local container), and the orchestrator
   receives only diff text, screenshot bytes, and structured agent output.
-- Graders that need to read code reach into the sandbox through **read-only**
+- **Bare-metal/`local` is a deliberate, first-class backend** (it's the one we
+  built first — see §2.3) for talking to your own machine directly: fast, free,
+  no egress limits. **Security caveat:** bare-metal runs untrusted agent edits
+  and commands *directly on the host* with no sandbox isolation — only point it
+  at repos/branches you're willing to have an agent mutate, and never at
+  untrusted issue input without a human in the loop. Isolated backends remain
+  the default for anything else.
+- Graders that need to read code reach into the backend through **read-only**
   tools — they can see what they judge, never modify it.
 
 ### 2.3 The execution backend is an adapter, not a fork in the code

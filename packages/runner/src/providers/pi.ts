@@ -60,6 +60,7 @@ class PiProvider implements Provider {
       env: { OPENROUTER_API_KEY: key },
       timeoutMs: PI_TIMEOUT_MS,
       heartbeatMs: HEARTBEAT_MS,
+      source: "agent", // pi IS the agent program; its raw stream is an agent log
     };
 
     const res = await backend.exec(cmd, opts, log);

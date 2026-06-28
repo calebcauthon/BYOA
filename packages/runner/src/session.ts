@@ -10,8 +10,8 @@
  * run the prompt, emit source-tagged logs + the blackboard output, and return.
  */
 import { join, relative, isAbsolute } from "node:path";
-import { appendFileSync, existsSync } from "node:fs";
-import type { AgentSessionSettings, Blackboard } from "@automations/core";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import type { AgentSession, AgentSessionSettings, Blackboard, SessionStatus } from "@automations/core";
 import { resolveBackend } from "./backends/index.ts";
 import { resolveProvider } from "./providers/index.ts";
 import { SessionLog } from "./logging.ts";
@@ -46,6 +46,24 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
     agent: settings.agent,
   });
 
+  // Persist what we were asked to run, so a session is self-documenting and
+  // reproducible (§2.9). The prompt is a stored artifact of every session (§3.1).
+  const startedAt = new Date().toISOString();
+  writeFileSync(join(outDir, "prompt.md"), prompt, "utf8");
+  const writeRecord = (status: SessionStatus, extra: Partial<AgentSession> = {}): void => {
+    const record: AgentSession = {
+      id: sessionId,
+      conversationId: "", // assigned by the orchestrator (M2); standalone runs have none
+      settings,
+      prompt: { persona: settings.agent, task: prompt, assembled: prompt },
+      status,
+      startedAt,
+      ...extra,
+    };
+    writeFileSync(join(outDir, "session.json"), JSON.stringify(record, null, 2), "utf8");
+  };
+  writeRecord("running");
+
   const backend = resolveBackend(settings);
   const provider = resolveProvider(settings);
 
@@ -70,8 +88,10 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
   try {
     output = await provider.run({ settings, backend, workdir, prompt, sessionDir, log });
     log.emit("orchestrator", "info", `session ${sessionId} finished`);
+    writeRecord("done", { finishedAt: new Date().toISOString(), output });
   } catch (err) {
     log.emit("orchestrator", "error", `session ${sessionId} failed: ${String(err)}`);
+    writeRecord("failed", { finishedAt: new Date().toISOString(), error: String(err) });
     throw err;
   } finally {
     await backend.dispose(log);

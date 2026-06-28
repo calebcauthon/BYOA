@@ -5,7 +5,7 @@
  * a place to execute commands and a working tree. The orchestrator picks which
  * backend a session uses; the runner just resolves and drives it.
  */
-import type { AgentSessionSettings } from "@automations/core";
+import type { AgentSessionSettings, LogSource } from "@automations/core";
 import type { SessionLog } from "../logging.ts";
 
 export interface ExecResult {
@@ -25,6 +25,15 @@ export interface ExecOpts {
   /** wall-clock kill switch + heartbeat cadence (§2.7) */
   timeoutMs?: number;
   heartbeatMs?: number;
+  /**
+   * Which log source this command's output belongs to (§3.2). The exec layer
+   * can't know a command's *meaning*, so the caller declares it:
+   *   "agent"        — the agent program itself (pi)
+   *   "workload"     — a program the agent/orchestrator runs (dev server, browser, tests)
+   *   "orchestrator" — runner/orchestrator bookkeeping (git rev-parse, status, …)
+   * Defaults to "orchestrator": a bare exec with no stated meaning is bookkeeping.
+   */
+  source?: LogSource;
 }
 
 export interface Backend {

@@ -31,7 +31,10 @@ class LocalBackend implements Backend {
   async exec(cmd: string[], opts: ExecOpts, log: SessionLog): Promise<ExecResult> {
     const [bin, ...args] = cmd;
     if (!bin) throw new Error("exec: empty command");
-    log.emit("workload", "info", `exec: ${cmd.join(" ")}`, { cwd: opts.cwd });
+    // The command's output belongs to whatever the caller says it is (§3.2);
+    // the "exec:" announcement is always runner bookkeeping.
+    const src = opts.source ?? "orchestrator";
+    log.emit("orchestrator", "debug", `exec: ${cmd.join(" ")}`, { cwd: opts.cwd, source: src });
 
     return await new Promise<ExecResult>((resolve) => {
       const child = spawn(bin, args, {
@@ -63,11 +66,11 @@ class LocalBackend implements Backend {
 
       child.stdout.on("data", (d) => {
         stdout += d;
-        log.emit("workload", "info", String(d).trimEnd());
+        log.emit(src, "info", String(d).trimEnd());
       });
       child.stderr.on("data", (d) => {
         stderr += d;
-        log.emit("workload", "warn", String(d).trimEnd());
+        log.emit(src, "warn", String(d).trimEnd());
       });
 
       child.on("close", (code) => {
