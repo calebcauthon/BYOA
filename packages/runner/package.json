@@ -10,6 +10,7 @@
     ".": "./src/session.ts"
   },
   "dependencies": {
-    "@automations/core": "*"
+    "@automations/core": "*",
+    "@daytonaio/sdk": "^0.192.0"
   }
 }
