@@ -36,10 +36,29 @@ export interface ExecOpts {
   source?: LogSource;
 }
 
+/** A file read back FROM the backend's filesystem (which may be a container). */
+export interface BackendFile {
+  /** path as seen inside the backend */
+  path: string;
+  content: string;
+  mtimeMs: number;
+}
+
+export interface PreparedBackend {
+  /** where the repo/working tree lives inside the backend */
+  workdir: string;
+  /**
+   * A fresh, writable directory inside the backend, OUTSIDE the repo, for the
+   * agent's own session files (e.g. pi's transcript). Fresh per session, so the
+   * provider never has to disambiguate a stale transcript.
+   */
+  scratchDir: string;
+}
+
 export interface Backend {
   readonly kind: string;
-  /** stand up the execution environment + working tree; return the workdir */
-  prepare(settings: AgentSessionSettings, log: SessionLog): Promise<{ workdir: string }>;
+  /** stand up the execution environment + working tree + scratch dir */
+  prepare(settings: AgentSessionSettings, log: SessionLog): Promise<PreparedBackend>;
   /**
    * The backend's current wall-clock as epoch milliseconds. The orchestrator
    * samples this once up front to compute the offset between the backend's clock
@@ -50,6 +69,12 @@ export interface Backend {
   now(log: SessionLog): Promise<number>;
   /** run a command in the environment, streaming output to the backend log */
   exec(cmd: string[], opts: ExecOpts, log: SessionLog): Promise<ExecResult>;
+  /**
+   * Read every file under `dir` whose name ends with `ext`, FROM the backend's
+   * filesystem. Lets the runner fetch pi's transcript regardless of where the
+   * session ran (host fs for local; `docker exec` for a container).
+   */
+  readDir(dir: string, ext: string, log: SessionLog): Promise<BackendFile[]>;
   /** tear down (or keep, for debugging) */
   dispose(log: SessionLog): Promise<void>;
 }

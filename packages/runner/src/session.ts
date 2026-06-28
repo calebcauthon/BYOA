@@ -19,6 +19,7 @@ import { writeTimeline } from "./timeline.ts";
 
 // Register the adapters that ship with the runner. Importing for side effects.
 import "./backends/local.ts";
+import "./backends/container.ts";
 import "./providers/pi.ts";
 
 export interface RunSessionInput {
@@ -71,7 +72,7 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
   const backend = resolveBackend(settings);
   const provider = resolveProvider(settings);
 
-  const { workdir } = await backend.prepare(settings, log);
+  const { workdir, scratchDir } = await backend.prepare(settings, log);
   // Orchestrator provenance: this is the orchestrator declaring the lifecycle
   // boundary, not the backend reporting about itself (the backend's own lines —
   // clock probe, dispose — are emitted inside the adapter and tagged "backend").
@@ -115,10 +116,9 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
     }
   }
 
-  const sessionDir = join(outDir, "pi-session");
   let output: Blackboard = {};
   try {
-    output = await provider.run({ settings, backend, workdir, prompt, sessionDir, clockOffsetMs, log });
+    output = await provider.run({ settings, backend, workdir, prompt, scratchDir, clockOffsetMs, log });
     log.emit("orchestrator", "info", `session ${sessionId} finished`);
     writeRecord("done", { finishedAt: new Date().toISOString(), output });
   } catch (err) {

@@ -15,8 +15,9 @@ export interface ProviderRunInput {
   workdir: string;
   /** the fully-assembled prompt text */
   prompt: string;
-  /** a directory the runner owns for this session's transcript/session files */
-  sessionDir: string;
+  /** a fresh writable dir INSIDE the backend for the agent's session files
+   *  (read back via backend.readDir, since it may live in a container) */
+  scratchDir: string;
   /** ms to ADD to a backend-clock timestamp to get host ("real") time (§ clock sync) */
   clockOffsetMs: number;
   log: SessionLog;

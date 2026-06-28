@@ -8,8 +8,18 @@
  * exec contract is identical to what the sandbox backend will need.
  */
 import { spawn } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { AgentSessionSettings } from "@automations/core";
-import { registerBackend, type Backend, type ExecOpts, type ExecResult } from "./index.ts";
+import {
+  registerBackend,
+  type Backend,
+  type BackendFile,
+  type ExecOpts,
+  type ExecResult,
+  type PreparedBackend,
+} from "./index.ts";
 import type { SessionLog } from "../logging.ts";
 
 class LocalBackend implements Backend {
@@ -20,7 +30,7 @@ class LocalBackend implements Backend {
     this.settings = settings;
   }
 
-  async prepare(settings: AgentSessionSettings, log: SessionLog): Promise<{ workdir: string }> {
+  async prepare(settings: AgentSessionSettings, log: SessionLog): Promise<PreparedBackend> {
     // The backend reporting about ITSELF (backend provenance): what it set up.
     // Distinct from the orchestrator's "backend ready" boundary line emitted
     // after this returns. Adapters with real setup (sandbox: create box, clone,
@@ -28,8 +38,12 @@ class LocalBackend implements Backend {
     // NB: the orchestrator owns branch/worktree creation (§4.1). Standalone, we
     // operate on whatever checkout we're handed.
     const workdir = settings.target.kind === "local" ? settings.target.repoPath : process.cwd();
-    log.emit("backend", "info", `prepared local backend; workdir ${workdir}`, { workdir });
-    return { workdir };
+    const scratchDir = mkdtempSync(join(tmpdir(), "agent-session-"));
+    log.emit("backend", "info", `prepared local backend; workdir ${workdir}; scratch ${scratchDir}`, {
+      workdir,
+      scratchDir,
+    });
+    return { workdir, scratchDir };
   }
 
   async now(log: SessionLog): Promise<number> {
@@ -98,6 +112,26 @@ class LocalBackend implements Backend {
       }
       child.stdin.end();
     });
+  }
+
+  async readDir(dir: string, ext: string, _log: SessionLog): Promise<BackendFile[]> {
+    let names: string[] = [];
+    try {
+      names = readdirSync(dir, { recursive: true, encoding: "utf8" });
+    } catch {
+      return [];
+    }
+    const out: BackendFile[] = [];
+    for (const name of names) {
+      if (!name.endsWith(ext)) continue;
+      const path = join(dir, name);
+      try {
+        out.push({ path, content: readFileSync(path, "utf8"), mtimeMs: statSync(path).mtimeMs });
+      } catch {
+        /* skip unreadable */
+      }
+    }
+    return out;
   }
 
   async dispose(log: SessionLog): Promise<void> {
