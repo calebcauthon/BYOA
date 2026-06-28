@@ -34,11 +34,14 @@ export interface RunSessionResult {
   sessionId: string;
   output: Blackboard;
   outDir: string;
+  /** the derived, sorted, readable chronological log for this session */
+  timelinePath: string;
 }
 
 export async function runSession(input: RunSessionInput): Promise<RunSessionResult> {
   const { sessionId, settings, prompt, outDir } = input;
   const log = new SessionLog(outDir, sessionId);
+  let timelinePath = "";
 
   log.emit("orchestrator", "info", `session ${sessionId} starting`, {
     backend: settings.backend,
@@ -127,9 +130,10 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
     // Derive the sorted, readable timeline once the session is fully done — even
     // on failure. Emit the meta line first so it's included in the timeline.
     log.emit("orchestrator", "info", "writing chronological timeline → timeline.log");
-    const { count } = writeTimeline(outDir);
-    log.emit("orchestrator", "debug", `timeline.log written (${count} entries)`);
+    const written = writeTimeline(outDir);
+    timelinePath = written.file;
+    log.emit("orchestrator", "debug", `timeline.log written (${written.count} entries)`);
   }
 
-  return { sessionId, output, outDir };
+  return { sessionId, output, outDir, timelinePath };
 }
