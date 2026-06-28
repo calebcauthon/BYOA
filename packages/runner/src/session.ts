@@ -74,13 +74,26 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
   // take the midpoint, so timestamps recorded inside the backend (pi's
   // transcript) can be normalized onto the host's real timeline. ~0 for local.
   const hostBefore = Date.now();
-  const backendNow = await backend.now(log);
+  const backendNow = await backend.now(log); // emits its own "clock probe" debug line
   const hostAfter = Date.now();
-  const clockOffsetMs = Math.round((hostBefore + hostAfter) / 2 - backendNow);
-  log.emit("orchestrator", "info", `clock sync: backend offset ${clockOffsetMs}ms`, {
-    clockOffsetMs,
-    rttMs: hostAfter - hostBefore,
-  });
+  const hostMid = Math.round((hostBefore + hostAfter) / 2);
+  const clockOffsetMs = hostMid - backendNow;
+  const rttMs = hostAfter - hostBefore;
+  // Show the raw arithmetic so the sync is legible from the log alone.
+  log.emit(
+    "orchestrator",
+    "debug",
+    `clock sync math: host read ${new Date(hostBefore).toISOString()} → ${new Date(hostAfter).toISOString()} ` +
+      `(midpoint ${new Date(hostMid).toISOString()}); backend reported ${new Date(backendNow).toISOString()}; ` +
+      `rtt=${rttMs}ms; offset = host_mid − backend = ${clockOffsetMs}ms`,
+    { hostBefore, hostAfter, hostMid, backendNow, rttMs, clockOffsetMs },
+  );
+  log.emit(
+    "orchestrator",
+    "info",
+    `clock sync: offset ${clockOffsetMs >= 0 ? "+" : ""}${clockOffsetMs}ms — added to backend/agent timestamps to map them onto the host 'real' timeline`,
+    { clockOffsetMs, rttMs },
+  );
 
   // If our out dir lands inside the working tree, keep it out of git so the
   // agent never commits our scratch and change-detection isn't fooled by it.

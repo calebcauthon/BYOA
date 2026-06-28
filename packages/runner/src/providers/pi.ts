@@ -135,7 +135,17 @@ class PiProvider implements Provider {
       return null;
     }
 
+    log.emit(
+      "agent",
+      "debug",
+      `reading transcript ${rel}: each message carries pi's own recorded timestamp; ` +
+        `re-emitting with ${offsetMs >= 0 ? "+" : ""}${offsetMs}ms offset to land on the host timeline`,
+      { file: rel, offsetMs },
+    );
+
     let seenFirstUser = false;
+    let firstPi: string | undefined;
+    let lastPi: string | undefined;
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -151,7 +161,12 @@ class PiProvider implements Provider {
       const content = msg["content"];
       if (!Array.isArray(content)) continue;
       // pi's real recording time for this message, normalized to the host clock.
+      const rawTs = typeof obj["timestamp"] === "string" ? obj["timestamp"] : undefined;
       const ts = this.hostTs(obj["timestamp"], offsetMs);
+      if (rawTs) {
+        firstPi ??= rawTs;
+        lastPi = rawTs;
+      }
 
       if (role === "user") {
         // First user message is the prompt we already have; skip it.
@@ -188,6 +203,14 @@ class PiProvider implements Provider {
           ts,
         );
       }
+    }
+    if (firstPi && lastPi) {
+      log.emit(
+        "agent",
+        "debug",
+        `transcript span: pi clock [${firstPi} … ${lastPi}] → host [${this.hostTs(firstPi, offsetMs)} … ${this.hostTs(lastPi, offsetMs)}]`,
+        { piFirst: firstPi, piLast: lastPi, offsetMs },
+      );
     }
     return path;
   }

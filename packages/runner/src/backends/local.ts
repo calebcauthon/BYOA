@@ -28,9 +28,14 @@ class LocalBackend implements Backend {
     return { workdir };
   }
 
-  async now(): Promise<number> {
-    // Bare metal shares the host clock; offset will be ~0.
-    return Date.now();
+  async now(log: SessionLog): Promise<number> {
+    // Bare metal shares the host clock; offset will be ~0. A real sandbox would
+    // run `date +%s%3N` inside the box here, and the reading could differ.
+    const epoch = Date.now();
+    log.emit("backend", "debug", `clock probe: backend wall-clock ${new Date(epoch).toISOString()} (epoch ${epoch}ms) — local shares the host clock`, {
+      epochMs: epoch,
+    });
+    return epoch;
   }
 
   async exec(cmd: string[], opts: ExecOpts, log: SessionLog): Promise<ExecResult> {
