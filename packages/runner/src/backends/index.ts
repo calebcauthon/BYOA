@@ -34,6 +34,11 @@ export interface ExecOpts {
    * Defaults to "orchestrator": a bare exec with no stated meaning is bookkeeping.
    */
   source?: LogSource;
+  /** observe stdout as it streams (line-by-line parsing of live event output) */
+  onStdout?: (chunk: string) => void;
+  /** emit raw stdout chunks to the log (default true). Set false when the caller
+   *  parses the stream itself via onStdout and would otherwise double-log noise. */
+  logStdout?: boolean;
 }
 
 /** A file read back FROM the backend's filesystem (which may be a container). */

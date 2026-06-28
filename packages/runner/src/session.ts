@@ -21,6 +21,7 @@ import { writeTimeline } from "./timeline.ts";
 import "./backends/local.ts";
 import "./backends/container.ts";
 import "./providers/pi.ts";
+import "./providers/claude.ts";
 
 export interface RunSessionInput {
   sessionId: string;

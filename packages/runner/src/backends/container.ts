@@ -151,7 +151,8 @@ class ContainerBackend implements Backend {
 
       child.stdout.on("data", (d) => {
         stdout += d;
-        log.emit(src, "info", String(d).trimEnd());
+        opts.onStdout?.(String(d));
+        if (opts.logStdout !== false) log.emit(src, "info", String(d).trimEnd());
       });
       child.stderr.on("data", (d) => {
         stderr += d;
