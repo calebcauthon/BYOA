@@ -20,13 +20,15 @@ class LocalBackend implements Backend {
     this.settings = settings;
   }
 
-  async prepare(settings: AgentSessionSettings, _log: SessionLog): Promise<{ workdir: string }> {
-    // Local has no real setup work to report — the orchestrator logs the
-    // "backend ready" boundary after this returns. Adapters with real setup
-    // (sandbox: create box, clone, install) should log those steps here.
+  async prepare(settings: AgentSessionSettings, log: SessionLog): Promise<{ workdir: string }> {
+    // The backend reporting about ITSELF (backend provenance): what it set up.
+    // Distinct from the orchestrator's "backend ready" boundary line emitted
+    // after this returns. Adapters with real setup (sandbox: create box, clone,
+    // install) report those steps here too.
     // NB: the orchestrator owns branch/worktree creation (§4.1). Standalone, we
     // operate on whatever checkout we're handed.
     const workdir = settings.target.kind === "local" ? settings.target.repoPath : process.cwd();
+    log.emit("backend", "info", `prepared local backend; workdir ${workdir}`, { workdir });
     return { workdir };
   }
 
