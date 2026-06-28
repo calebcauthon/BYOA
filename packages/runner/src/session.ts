@@ -68,7 +68,10 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
   const provider = resolveProvider(settings);
 
   const { workdir } = await backend.prepare(settings, log);
-  log.emit("backend", "info", `backend ready: ${backend.kind}`, { workdir });
+  // Orchestrator provenance: this is the orchestrator declaring the lifecycle
+  // boundary, not the backend reporting about itself (the backend's own lines —
+  // clock probe, dispose — are emitted inside the adapter and tagged "backend").
+  log.emit("orchestrator", "info", `backend ready: ${backend.kind}`, { workdir });
 
   // Clock sync up front: sample the backend clock between two host readings and
   // take the midpoint, so timestamps recorded inside the backend (pi's
