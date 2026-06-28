@@ -16,7 +16,7 @@
  * AgentSessionSettings.provider (the agent program, "pi"). M1 hardwires
  * openrouter; the model comes from settings.model.
  */
-import type { Blackboard } from "@automations/core";
+import type { AgentResult, Blackboard, Usage } from "@automations/core";
 import { registerProvider, type Provider, type ProviderRunInput } from "./index.ts";
 import type { Backend, BackendFile, ExecOpts } from "../backends/index.ts";
 import type { SessionLog } from "../logging.ts";
@@ -63,7 +63,9 @@ class PiProvider implements Provider {
     const res = await backend.exec(cmd, opts, log);
 
     const files = await backend.readDir(scratchDir, ".jsonl", log);
-    const sessionFile = this.emitTranscript(files, log, clockOffsetMs);
+    const newest = files.length > 0 ? [...files].sort((a, b) => b.mtimeMs - a.mtimeMs)[0]! : undefined;
+    const transcriptRef = this.emitTranscript(newest, log, clockOffsetMs);
+    const usage = newest ? this.sumUsage(newest.content) : {};
 
     if (res.exitCode !== 0) {
       throw new Error(
@@ -74,17 +76,53 @@ class PiProvider implements Provider {
     const headAfter = await gitHead(backend, workdir, log);
     const porcelain = (await backend.exec(["git", "status", "--porcelain"], { cwd: workdir }, log)).stdout.trim();
     const changed = headAfter !== headBefore || porcelain.length > 0;
-    log.emit("agent", "info", `pi finished (changed=${changed})`, { headBefore, headAfter });
+    log.emit("agent", "info", `pi finished (changed=${changed}${usage.costUsd !== undefined ? `, cost $${usage.costUsd.toFixed(4)}` : ""})`, {
+      headBefore,
+      headAfter,
+      usage,
+    });
 
-    return {
-      [settings.agent]: {
-        changed,
-        headBefore,
-        headAfter,
-        uncommitted: porcelain.length > 0,
-        sessionFile,
-      },
+    const result: AgentResult = {
+      changed,
+      headBefore,
+      headAfter,
+      uncommitted: porcelain.length > 0,
+      usage,
+      ...(transcriptRef ? { transcriptRef } : {}),
     };
+    return { [settings.agent]: result };
+  }
+
+  /** Sum pi's per-message usage (each assistant message carries usage.cost +
+   *  token counts) into the standard Usage shape. */
+  private sumUsage(content: string): Usage {
+    let costUsd = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheTokens = 0;
+    let totalTokens = 0;
+    let seen = false;
+    for (const line of content.split("\n")) {
+      if (!line.trim()) continue;
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const msg = (obj["message"] ?? {}) as Record<string, unknown>;
+      const u = msg["usage"] as Record<string, unknown> | undefined;
+      if (!u) continue;
+      seen = true;
+      const cost = u["cost"] as Record<string, unknown> | undefined;
+      if (cost && typeof cost["total"] === "number") costUsd += cost["total"];
+      if (typeof u["input"] === "number") inputTokens += u["input"];
+      if (typeof u["output"] === "number") outputTokens += u["output"];
+      if (typeof u["cacheRead"] === "number") cacheTokens += u["cacheRead"];
+      if (typeof u["cacheWrite"] === "number") cacheTokens += u["cacheWrite"];
+      if (typeof u["totalTokens"] === "number") totalTokens += u["totalTokens"];
+    }
+    return seen ? { costUsd, inputTokens, outputTokens, cacheTokens, totalTokens } : {};
   }
 
   /** Normalize a pi-clock ISO timestamp onto the host timeline. */
@@ -99,12 +137,11 @@ class PiProvider implements Provider {
    *  with pi's REAL recorded time (offset to host clock) so the unified timeline
    *  preserves real-life order. The scratch dir is fresh per session, so the
    *  newest file is unambiguously this run's transcript. */
-  private emitTranscript(files: BackendFile[], log: SessionLog, offsetMs: number): string | null {
-    if (files.length === 0) {
+  private emitTranscript(newest: BackendFile | undefined, log: SessionLog, offsetMs: number): string | null {
+    if (!newest) {
       log.emit("agent", "warn", "no pi session jsonl found to capture");
       return null;
     }
-    const newest = [...files].sort((a, b) => b.mtimeMs - a.mtimeMs)[0]!;
     const path = newest.path;
     const lines = newest.content.split("\n");
 

@@ -20,7 +20,7 @@
  * "claude-haiku-4-5", "sonnet", "opus") — NOT the OpenRouter "anthropic/…" form
  * that the pi provider uses.
  */
-import type { Blackboard } from "@automations/core";
+import type { AgentResult, Blackboard, Usage } from "@automations/core";
 import { registerProvider, type Provider, type ProviderRunInput } from "./index.ts";
 import type { Backend, ExecOpts } from "../backends/index.ts";
 import type { SessionLog } from "../logging.ts";
@@ -40,7 +40,8 @@ class ClaudeProvider implements Provider {
     const headBefore = await gitHead(backend, workdir, log);
     log.emit("agent", "info", `claude starting (model=${settings.model}, agent=${settings.agent})`, { headBefore });
 
-    let costUsd: number | undefined;
+    const usage: Usage = {};
+    let sessionId: string | undefined;
     let isError = false;
     let buffer = "";
     const onLine = (line: string): void => {
@@ -53,9 +54,23 @@ class ClaudeProvider implements Provider {
         return; // not a JSON event line
       }
       this.emitEvent(ev, log);
+      if (ev["type"] === "system" && typeof ev["session_id"] === "string") {
+        sessionId = ev["session_id"] as string;
+      }
       if (ev["type"] === "result") {
-        costUsd = typeof ev["total_cost_usd"] === "number" ? (ev["total_cost_usd"] as number) : undefined;
+        if (typeof ev["total_cost_usd"] === "number") usage.costUsd = ev["total_cost_usd"] as number;
         isError = ev["is_error"] === true;
+        const u = ev["usage"] as Record<string, unknown> | undefined;
+        if (u) {
+          const inTok = typeof u["input_tokens"] === "number" ? (u["input_tokens"] as number) : 0;
+          const outTok = typeof u["output_tokens"] === "number" ? (u["output_tokens"] as number) : 0;
+          const cacheR = typeof u["cache_read_input_tokens"] === "number" ? (u["cache_read_input_tokens"] as number) : 0;
+          const cacheW = typeof u["cache_creation_input_tokens"] === "number" ? (u["cache_creation_input_tokens"] as number) : 0;
+          usage.inputTokens = inTok;
+          usage.outputTokens = outTok;
+          usage.cacheTokens = cacheR + cacheW;
+          usage.totalTokens = inTok + outTok + cacheR + cacheW;
+        }
       }
     };
     const onStdout = (chunk: string): void => {
@@ -97,15 +112,21 @@ class ClaudeProvider implements Provider {
     const headAfter = await gitHead(backend, workdir, log);
     const porcelain = (await backend.exec(["git", "status", "--porcelain"], { cwd: workdir }, log)).stdout.trim();
     const changed = headAfter !== headBefore || porcelain.length > 0;
-    log.emit("agent", "info", `claude finished (changed=${changed}${costUsd !== undefined ? `, cost $${costUsd.toFixed(4)}` : ""})`, {
+    log.emit("agent", "info", `claude finished (changed=${changed}${usage.costUsd !== undefined ? `, cost $${usage.costUsd.toFixed(4)}` : ""})`, {
       headBefore,
       headAfter,
-      costUsd,
+      usage,
     });
 
-    return {
-      [settings.agent]: { changed, headBefore, headAfter, uncommitted: porcelain.length > 0, costUsd },
+    const result: AgentResult = {
+      changed,
+      headBefore,
+      headAfter,
+      uncommitted: porcelain.length > 0,
+      usage,
+      ...(sessionId ? { transcriptRef: sessionId } : {}),
     };
+    return { [settings.agent]: result };
   }
 
   /** Map one stream-json event to `agent`-source log lines (stamped at arrival). */

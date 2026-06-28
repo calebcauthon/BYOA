@@ -108,6 +108,37 @@ export interface Conversation {
 
 export type Blackboard = Record<string, unknown>;
 
+// ───────────────────────────── Usage + AgentResult ─────────────────────────────
+// The STANDARD shape every coding provider (pi, claude-subscription, …) writes to
+// the blackboard, so the orchestrator/workflow can read cost + outcome uniformly
+// regardless of which agent program ran.
+
+/** Model usage + cost, normalized across providers. */
+export interface Usage {
+  /** total cost in USD (pi: summed per-message cost.total; claude: total_cost_usd) */
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** cache read + write tokens, when the provider reports them */
+  cacheTokens?: number;
+  totalTokens?: number;
+}
+
+/** What a coding agent reports after a session. Stored under the agent's name on
+ *  the blackboard: `{ [agentName]: AgentResult }`. */
+export interface AgentResult {
+  /** did the agent change the repo (HEAD moved or dirty tree) */
+  changed: boolean;
+  headBefore: string;
+  headAfter: string;
+  /** uncommitted changes remained in the tree */
+  uncommitted: boolean;
+  /** standardized cost/usage — present for every provider */
+  usage: Usage;
+  /** pointer to the raw transcript (pi: session JSONL path; claude: session id) */
+  transcriptRef?: string;
+}
+
 // ───────────────────────────── Verdict + Finding ─────────────────────────────
 
 export type Severity = "critical" | "major" | "minor" | "info";
