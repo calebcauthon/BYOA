@@ -1,0 +1,15 @@
+{
+  "name": "@automations/runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent-session": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/session.ts"
+  },
+  "dependencies": {
+    "@automations/core": "*"
+  }
+}

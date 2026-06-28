@@ -1,0 +1,6 @@
+# Kept as a note: we chose npm workspaces (built into npm 10, no extra install).
+# If we later move to pnpm, rename this to pnpm-workspace.yaml and drop the
+# "workspaces" field from package.json.
+packages:
+  - "packages/*"
+  - "apps/*"

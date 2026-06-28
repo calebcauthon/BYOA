@@ -1,0 +1,21 @@
+{
+  "name": "automations-v2",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build --noEmit || tsc -b",
+    "runner": "node packages/runner/src/cli.ts",
+    "orchestrator": "node packages/orchestrator/src/main.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

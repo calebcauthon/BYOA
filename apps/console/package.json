@@ -1,0 +1,7 @@
+{
+  "name": "@automations/console",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "React UI (Vite). NOT YET SCAFFOLDED — see docs/build-plan.md (M4). Renders the Conversation timeline, launch surface, run registry, and unified log view that the orchestrator serves."
+}

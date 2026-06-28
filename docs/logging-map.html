@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Automations — Characters, Settings & Logs</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; background: #0d0f12; color: #e6e9ef;
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+    padding: 28px 32px 64px;
+  }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; }
+  .sub { color: #9aa3b2; margin: 0 0 24px; font-size: 13px; }
+  .diagram { background: #12151a; border: 1px solid #232934; border-radius: 12px; padding: 20px; }
+  h2 { font-size: 15px; margin: 32px 0 10px; color: #cdd3de; border-bottom: 1px solid #232934; padding-bottom: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #1d222b; vertical-align: top; }
+  th { color: #9aa3b2; font-weight: 550; }
+  code { background: #1b2027; padding: 1px 5px; border-radius: 4px; font-size: 12px; color: #c8d6ef; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px; font-weight: 600; }
+  .struct { background: #16331f; color: #7fdca0; }
+  .unstruct { background: #3a2417; color: #e8a578; }
+  .muted { color: #8a93a3; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <h1>Automations — Characters, Settings &amp; Logs</h1>
+  <p class="sub">A starting-point map: the two <b>characters</b> (actors), the two <b>settings</b> (places work happens), and the four <b>log sources</b> they emit. Names are proposals — argue with them.</p>
+
+  <div class="diagram">
+  <pre class="mermaid">
+flowchart TB
+
+    Operator(["👤 Operator<br/><span>the human</span>"])
+
+    subgraph HOST["🖥️  ORCHESTRATOR HOST &nbsp;— your local machine (setting #1)"]
+      direction TB
+      Console["🪟 Console<br/><i>the web UI you click</i>"]
+      Controller["🎛️ Orchestrator / Controller<br/><i>run.py + agentloop — owns truth,<br/>push, PR, comments</i>"]
+
+      subgraph OLOGS["🗂️ Orchestrator logs"]
+        direction TB
+        RunLog["📜 Run log (catch-all stream)<br/><code>.agentloop-runs/run-*.log</code>"]
+        Structured["🧱 Structured state<br/><code>state.json</code> · <code>events.jsonl</code><br/><code>trace.jsonl</code> · <code>explanation.md</code>"]
+        Prompts["📝 Assembled prompts<br/><code>.agentloop-prompts/</code>"]
+        Usage["💲 Usage tracker<br/><i>OpenRouter reviewer tokens (partial)</i>"]
+      end
+    end
+
+    subgraph SETTING["📦  AGENT SESSION SETTING &nbsp;— Daytona sandbox │ local container │ bare metal (setting #2)"]
+      direction TB
+      Session["💬 Agent Session<br/><i>one conversation, one place</i>"]
+      AgentProg["🤖 Agent Program (pi)<br/><i>the coding/QA agent</i>"]
+      Workload["🔧 Workload programs<br/><i>app build/serve · agent-browser ·<br/>tests · lint — what the agent runs</i>"]
+
+      subgraph ALOGS["🗂️ Session-side logs"]
+        direction TB
+        Convo["🧠 Agent-program log = the conversation<br/><i>thinking · input · output · tool calls/results</i><br/><code>sessions/&lt;agent&gt;-&lt;run&gt;.jsonl</code>"]
+        WorkOut["🪵 Workload-program output<br/><i>stdout/stderr of programs the agent ran</i>"]
+      end
+    end
+
+    Operator --> Console
+    Console -->|"launch / continue / fork"| Controller
+    Controller -->|"creates ONE session per run"| Session
+    Session --> AgentProg
+    AgentProg -->|"invokes"| Workload
+
+    Controller -.writes.-> RunLog
+    Controller -.writes.-> Structured
+    Controller -.writes.-> Prompts
+    Controller -.writes.-> Usage
+
+    AgentProg -.writes.-> Convo
+    Workload -.writes.-> WorkOut
+
+    Convo -->|"snapshotted back to host"| Controller
+    WorkOut -->|"echoed through controller logger"| RunLog
+
+    Console -->|"reads to show you<br/>status + transcript"| Structured
+    Console --> Convo
+
+    classDef place fill:#10151c,stroke:#2b3340,color:#cdd3de;
+    classDef logs fill:#161b22,stroke:#2b3340,color:#aeb6c2;
+    classDef struct fill:#13251a,stroke:#2c5238,color:#9fe3b6;
+    classDef unstruct fill:#241712,stroke:#5a3520,color:#e8b489;
+    classDef actor fill:#1a2030,stroke:#3a4252,color:#dbe3f5;
+    class HOST,SETTING place;
+    class OLOGS,ALOGS logs;
+    class Structured,Prompts,Convo struct;
+    class RunLog,WorkOut unstruct;
+  </pre>
+  </div>
+
+  <h2>The vocabulary (proposed names)</h2>
+  <table>
+    <tr><th>Name</th><th>What it is</th><th>In the code today</th></tr>
+    <tr><td><b>Operator</b></td><td>The human who launches and inspects runs.</td><td class="muted">you</td></tr>
+    <tr><td><b>Console</b></td><td>The web UI — the only thing the Operator clicks.</td><td><code>agent-console/</code></td></tr>
+    <tr><td><b>Orchestrator / Controller</b></td><td>The local app that runs everything: owns durable truth, spawns sessions, owns the push / PR / comments.</td><td><code>run.py</code> + <code>agentloop/</code></td></tr>
+    <tr><td><b>Agent Session</b></td><td>One conversation/run. Takes place inside exactly one Setting.</td><td>a <i>run</i> / <i>turn</i></td></tr>
+    <tr><td><b>Agent Session Setting</b></td><td>The <i>place</i> the session runs: Daytona sandbox, local Docker container, or bare metal. Swappable backend.</td><td><code>sandbox.py</code>, <code>local_container.py</code>, <code>--local-direct</code></td></tr>
+    <tr><td><b>Agent Program</b></td><td>The program driving the conversation (<code>pi</code>). Emits the transcript.</td><td>pi via OpenRouter</td></tr>
+    <tr><td><b>Workload programs</b></td><td>Everything the agent <i>runs</i>: app build/serve, agent-browser, tests, lint.</td><td>devcontainer serve, agent-browser</td></tr>
+  </table>
+
+  <h2>The four log sources</h2>
+  <table>
+    <tr><th>Log source</th><th>Emitted by</th><th>Contains</th><th>Form</th><th>Lands in</th></tr>
+    <tr>
+      <td><b>1. Orchestrator — run log</b></td><td>Controller</td>
+      <td>The catch-all stream: controller's own logging <i>plus</i> echoed sandbox lifecycle and Workload stdout <i>plus</i> pi heartbeats.</td>
+      <td><span class="tag unstruct">unstructured</span></td>
+      <td><code>.agentloop-runs/run-*.log</code></td>
+    </tr>
+    <tr>
+      <td><b>2. Orchestrator — structured state</b></td><td>Controller</td>
+      <td>Run snapshot, append-only transitions, per-iteration trace, assembled prompts, partial token usage.</td>
+      <td><span class="tag struct">structured</span></td>
+      <td><code>.agentloop-state/runs/&lt;run&gt;/</code>, <code>.agentloop-prompts/</code></td>
+    </tr>
+    <tr>
+      <td><b>3. Agent-program log (the conversation)</b></td><td>Agent Program (pi)</td>
+      <td>Thinking, input, output, tool calls &amp; tool results — the actual reasoning trace.</td>
+      <td><span class="tag struct">structured</span></td>
+      <td><code>sessions/&lt;agent&gt;-&lt;run&gt;.jsonl</code> (snapshotted to host)</td>
+    </tr>
+    <tr>
+      <td><b>4. Workload-program output</b></td><td>Programs the agent runs</td>
+      <td>Build/serve output, agent-browser output, test/lint stdout &amp; stderr.</td>
+      <td><span class="tag unstruct">unstructured</span></td>
+      <td class="muted">no file of its own — echoed into the run log (source #1)</td>
+    </tr>
+  </table>
+
+  <h2>The thing worth talking about 👇</h2>
+  <p class="sub" style="max-width:760px">
+    Notice sources <b>1</b> and <b>4</b> are the same file. There is <b>no dedicated log for the Setting</b> (the system hosting the session) and <b>no dedicated log for Workload programs</b> — they both blur into the one big <code>run-*.log</code>. Only the conversation (source&nbsp;3) is cleanly separated. That's why troubleshooting means grepping across <code>run-*.log</code> + <code>events.jsonl</code> + <code>trace.jsonl</code> + the session JSONL + tmux logs. In v2 these four sources probably want to be four addressable streams attached to one <b>Trace</b> primitive per session.
+  </p>
+
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: "dark", securityLevel: "loose",
+      themeVariables: { fontSize: "13px", primaryColor: "#10151c", lineColor: "#5b6678" } });
+  </script>
+</body>
+</html>
