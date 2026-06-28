@@ -16,6 +16,8 @@ import {
   startSession,
   type StartSessionInput,
 } from "../conversation/service.ts";
+import { buildTimeline } from "../logs/timeline.ts";
+import { getConversation } from "../state/store.ts";
 import type { Target } from "@automations/core";
 
 function send(res: ServerResponse, status: number, body: unknown): void {
@@ -53,8 +55,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return rendered ? send(res, 200, rendered) : send(res, 404, { error: "not found" });
     }
     if (parts[2] === "timeline" && method === "GET") {
-      const rendered = renderConversation(convId);
-      return rendered ? send(res, 200, rendered.timeline) : send(res, 404, { error: "not found" });
+      if (!getConversation(convId)) return send(res, 404, { error: "not found" });
+      const anchor = url.searchParams.get("anchor") === "session" ? "session" : "conversation";
+      return send(res, 200, buildTimeline(convId, anchor));
     }
     if (parts[2] === "sessions" && method === "POST") {
       const body = (await readBody(req)) as unknown as StartSessionInput;
