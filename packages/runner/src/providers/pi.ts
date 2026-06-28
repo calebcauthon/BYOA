@@ -16,7 +16,7 @@
  * AgentSessionSettings.provider (the agent program, "pi"). M1 hardwires
  * openrouter; the model comes from settings.model.
  */
-import { readdirSync, readFileSync, mkdirSync } from "node:fs";
+import { readdirSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Blackboard } from "@automations/core";
 import { registerProvider, type Provider, type ProviderRunInput } from "./index.ts";
@@ -38,6 +38,9 @@ class PiProvider implements Provider {
     const key = process.env.OPENROUTER_API_KEY;
     if (!key) throw new Error("OPENROUTER_API_KEY is not set");
     mkdirSync(sessionDir, { recursive: true });
+    // Snapshot any pre-existing session files so we capture THIS run's transcript,
+    // not a stale one left in a reused out dir.
+    const before = this.listJsonl(sessionDir);
 
     const headBefore = await gitHead(backend, workdir, log);
     log.emit("agent", "info", `pi starting (model=${settings.model}, agent=${settings.agent})`, {
@@ -65,7 +68,7 @@ class PiProvider implements Provider {
 
     const res = await backend.exec(cmd, opts, log);
 
-    const sessionFile = this.emitTranscript(sessionDir, log, clockOffsetMs);
+    const sessionFile = this.emitTranscript(sessionDir, log, clockOffsetMs, before);
 
     if (res.exitCode !== 0) {
       throw new Error(
@@ -97,23 +100,33 @@ class PiProvider implements Provider {
     return new Date(ms + offsetMs).toISOString();
   }
 
-  /** Find the pi session JSONL and stream each block out as `agent` log lines,
-   *  each stamped with pi's REAL recorded time (offset to host clock) so the
-   *  unified timeline preserves real-life order. */
-  private emitTranscript(sessionDir: string, log: SessionLog, offsetMs: number): string | null {
-    let files: string[] = [];
+  /** Relative paths of every *.jsonl under a dir (recursive). */
+  private listJsonl(dir: string): string[] {
     try {
-      files = readdirSync(sessionDir, { recursive: true, encoding: "utf8" }).filter((f) =>
-        f.endsWith(".jsonl"),
-      );
+      return readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".jsonl"));
     } catch {
-      /* none */
+      return [];
     }
-    if (files.length === 0) {
+  }
+
+  /** Find THIS run's pi session JSONL and stream each block out as `agent` log
+   *  lines, each stamped with pi's REAL recorded time (offset to host clock) so
+   *  the unified timeline preserves real-life order. `before` is the set of files
+   *  that existed prior to this run, so we never capture a stale transcript. */
+  private emitTranscript(sessionDir: string, log: SessionLog, offsetMs: number, before: string[]): string | null {
+    const all = this.listJsonl(sessionDir);
+    const beforeSet = new Set(before);
+    // Prefer files created during this run; if none are new (e.g. pi appended to
+    // a resumed session), fall back to the most-recently-modified file.
+    const fresh = all.filter((f) => !beforeSet.has(f));
+    const candidates = fresh.length > 0 ? fresh : all;
+    if (candidates.length === 0) {
       log.emit("agent", "warn", "no pi session jsonl found to capture");
       return null;
     }
-    const rel = files[0]!;
+    const rel = candidates
+      .map((f) => ({ f, mtime: statSync(join(sessionDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)[0]!.f;
     const path = join(sessionDir, rel);
     let lines: string[] = [];
     try {
