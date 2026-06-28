@@ -24,7 +24,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentSessionSettings, Target } from "@automations/core";
+import type { AgentSessionSettings, IgnoreKind, Target } from "@automations/core";
 import { runSession } from "./session.ts";
 import { writeTimeline } from "./timeline.ts";
 
@@ -35,6 +35,8 @@ interface SessionSpec {
   agent: string;
   target: Target;
   carryContext?: string;
+  /** ignore files to respect when copying the workspace to a backend (daytona) */
+  respectIgnore?: IgnoreKind[];
   prompt?: string;
   promptFile?: string;
   out?: string;
@@ -93,6 +95,7 @@ async function main(): Promise<void> {
     agent: required(spec.agent, "agent"),
     target: required(spec.target, "target"),
     ...(spec.carryContext !== undefined ? { carryContext: spec.carryContext } : {}),
+    ...(spec.respectIgnore !== undefined ? { respectIgnore: spec.respectIgnore } : {}),
   };
 
   const prompt = spec.prompt ?? (spec.promptFile ? readFileSync(spec.promptFile, "utf8") : undefined);

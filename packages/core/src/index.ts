@@ -49,7 +49,16 @@ export interface AgentSessionSettings {
   agent: string;
   /** carried-forward context from prior sessions in the same conversation */
   carryContext?: string;
+  /**
+   * Ignore files to respect when COPYING the workspace into a backend (only
+   * applies to copy-based backends like daytona; bind-mounted/local see the dir
+   * as-is). Opt-in; default uploads the whole tree (minus scratch). e.g.
+   * ["gitignore","dockerignore"] avoids shipping ignored junk and secrets.
+   */
+  respectIgnore?: IgnoreKind[];
 }
+
+export type IgnoreKind = "gitignore" | "dockerignore";
 
 // ───────────────────────────── Prompt ─────────────────────────────
 // The assembled instruction actually sent to an agent — a stored, inspectable

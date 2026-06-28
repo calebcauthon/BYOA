@@ -21,11 +21,11 @@
  * session API + completion sentinel (ADR-0001 Decision 5) — not needed yet.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Daytona, Image, type Sandbox, type CreateSandboxFromImageParams } from "@daytonaio/sdk";
-import type { AgentSessionSettings } from "@automations/core";
+import type { AgentSessionSettings, IgnoreKind } from "@automations/core";
 import {
   registerBackend,
   type Backend,
@@ -42,16 +42,58 @@ const SCRATCH = "/agent-session";
 
 const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
-function hostTar(repoPath: string): Promise<string> {
-  const tgz = join(mkdtempSync(join(tmpdir(), "daytona-up-")), "repo.tgz");
+function runTar(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Include .git (so the agent can commit / we can read HEAD); skip our own
-    // scratch + deps. -C repoPath . tars the working tree.
-    const child = spawn("tar", ["--exclude=./.session", "--exclude=./node_modules", "-czf", tgz, "-C", repoPath, "."]);
+    const child = spawn("tar", args);
     let err = "";
     child.stderr.on("data", (d) => (err += d));
-    child.on("close", (code) => (code === 0 ? resolve(tgz) : reject(new Error(`tar failed: ${err}`))));
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`tar failed: ${err.trim()}`))));
   });
+}
+
+function capStdout(bin: string, args: string[]): Promise<{ code: number; stdout: Buffer }> {
+  return new Promise((resolve) => {
+    const child = spawn(bin, args);
+    const chunks: Buffer[] = [];
+    child.stdout.on("data", (d) => chunks.push(d as Buffer));
+    child.on("close", (code) => resolve({ code: code ?? -1, stdout: Buffer.concat(chunks) }));
+    child.on("error", () => resolve({ code: -1, stdout: Buffer.alloc(0) }));
+  });
+}
+
+/**
+ * Tar the host repo for upload. `respect` opts in to ignore files (only copy-
+ * based backends like this one need it — see AgentSessionSettings.respectIgnore):
+ *   gitignore   → use `git ls-files -co --exclude-standard` (accurate: honors
+ *                 nested/global ignores + negations) as the include set; .git is
+ *                 added explicitly so the agent can still commit / we read HEAD.
+ *   dockerignore→ layered on as a tar `--exclude-from .dockerignore`.
+ * With no opts, uploads the whole tree minus our scratch (the original behavior).
+ */
+async function hostTar(repoPath: string, respect: Set<IgnoreKind>): Promise<string> {
+  const tgz = join(mkdtempSync(join(tmpdir(), "daytona-up-")), "repo.tgz");
+  const isGit = existsSync(join(repoPath, ".git"));
+  const dockerignore = join(repoPath, ".dockerignore");
+  const useDocker = respect.has("dockerignore") && existsSync(dockerignore);
+
+  if (respect.has("gitignore") && isGit) {
+    // Build the include list from git (null-separated), then append .git.
+    const ls = await capStdout("git", ["-C", repoPath, "ls-files", "-co", "--exclude-standard", "-z"]);
+    if (ls.code !== 0) throw new Error("git ls-files failed while building upload set");
+    const listFile = join(mkdtempSync(join(tmpdir(), "daytona-list-")), "files.null");
+    writeFileSync(listFile, Buffer.concat([ls.stdout, Buffer.from(".git\0")]));
+    const args = ["-czf", tgz, "-C", repoPath, "--null", "-T", listFile];
+    if (useDocker) args.push("--exclude-from", dockerignore);
+    await runTar(args);
+    return tgz;
+  }
+
+  // Fallback: whole tree minus scratch (+ optional dockerignore).
+  const args = ["--exclude=./.session", "--exclude=./node_modules", "-czf", tgz, "-C", repoPath];
+  if (useDocker) args.push("--exclude-from", dockerignore);
+  args.push(".");
+  await runTar(args);
+  return tgz;
 }
 
 class DaytonaBackend implements Backend {
@@ -114,8 +156,10 @@ class DaytonaBackend implements Backend {
 
     // Get the working tree IN (no bind mount).
     if (settings.target.kind === "local") {
-      log.emit("backend", "info", `uploading local repo ${settings.target.repoPath} → ${WORKDIR} (tar+upload, no bind mount)`);
-      const tgz = await hostTar(settings.target.repoPath);
+      const respect = new Set(settings.respectIgnore ?? []);
+      const respectNote = respect.size > 0 ? ` (respecting ${[...respect].join(", ")})` : " (whole tree)";
+      log.emit("backend", "info", `uploading local repo ${settings.target.repoPath} → ${WORKDIR} (tar+upload, no bind mount)${respectNote}`);
+      const tgz = await hostTar(settings.target.repoPath, respect);
       await this.sandbox.fs.uploadFile(tgz, "/tmp/repo.tgz");
       await this.must(`tar xzf /tmp/repo.tgz -C ${WORKDIR}`, log);
     } else {
