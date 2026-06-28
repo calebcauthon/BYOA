@@ -32,18 +32,30 @@ packages/orchestrator  owns+renders Conversations; GitHub liaison; state; API
 apps/console           React UI (Vite)
 ```
 
-## Run the standalone session (works today, stubbed)
+## Run the standalone session
+
+The runner takes one JSON spec (file path, inline string, or stdin):
 
 ```bash
-echo "Add a hello route." > /tmp/p.md
-node packages/runner/src/cli.ts run \
-  --provider pi --model anthropic/claude-opus-4.8 \
-  --backend local --repo-path /path/to/repo --branch feat-x \
-  --agent generic --prompt /tmp/p.md --out ./.session --dry-run
+cat > /tmp/spec.json <<'EOF'
+{
+  "backend": "local",
+  "provider": "pi",
+  "model": "anthropic/claude-opus-4.8",
+  "agent": "generic",
+  "target": { "kind": "local", "repoPath": "/path/to/repo", "branch": "feat-x" },
+  "promptFile": "/tmp/p.md",
+  "out": "./.session"
+}
+EOF
+
+node packages/runner/src/cli.ts run /tmp/spec.json --dry-run   # resolve + print plan
+node packages/runner/src/cli.ts run /tmp/spec.json             # execute
 ```
 
-Drop `--dry-run` to execute (providers/backends are stubs until M1). Logs land in
-`./.session/` as one source-tagged JSONL per source (`agent`, `backend`,
+Also accepts inline JSON (`run '{…}'`) or stdin (`… | run`). Use `prompt` for an
+inline prompt instead of `promptFile`, and `"dryRun": true` in the spec. Logs land
+in the `out` dir as one source-tagged JSONL per source (`agent`, `backend`,
 `orchestrator`, `workload`).
 
 ## Develop

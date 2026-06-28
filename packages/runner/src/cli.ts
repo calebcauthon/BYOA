@@ -1,94 +1,97 @@
 #!/usr/bin/env node
 /**
- * agent-session — standalone CLI to run ONE Agent Session.
+ * agent-session — standalone CLI to run ONE Agent Session from a JSON spec.
  *
- * The whole point of this package: you can run an agent prompt by itself, against
- * any backend, with no orchestrator. Examples:
+ * Usage:
+ *   agent-session run <spec.json>     # path to a JSON spec file
+ *   agent-session run '<json>'        # inline JSON string
+ *   agent-session run                 # read JSON spec from stdin
+ *   add --dry-run to resolve + print the plan without running.
  *
- *   # local, dry-run (just resolve + print the plan)
- *   node packages/runner/src/cli.ts run \
- *     --provider pi --model anthropic/claude-opus-4.8 \
- *     --backend local --repo-path /path/to/repo --branch feat-x \
- *     --agent generic --prompt ./prompt.md --out ./.session --dry-run
- *
- *   # remote target
- *   node packages/runner/src/cli.ts run \
- *     --provider pi --model ... --backend sandbox \
- *     --repo owner/name --issue 12 --branch agent/issue-12 \
- *     --agent coder --prompt ./prompt.md --out ./.session
+ * Spec shape (see SessionSpec):
+ *   {
+ *     "backend":  "local" | "container" | "sandbox",
+ *     "provider": "pi" | "claude-subscription" | "codex",
+ *     "model":    "anthropic/claude-opus-4.8",
+ *     "agent":    "generic",
+ *     "target":   { "kind": "local",  "repoPath": "/path/to/repo", "branch": "feat-x" }
+ *               | { "kind": "remote", "repo": "owner/name", "issue": 12, "branch": "agent/issue-12" },
+ *     "prompt":   "…inline prompt…",        // OR
+ *     "promptFile": "./prompt.md",
+ *     "out":      "./.session",             // optional; defaults to ./.session
+ *     "dryRun":   false                     // optional
+ *   }
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSessionSettings, Target } from "@automations/core";
 import { runSession } from "./session.ts";
 
-function parseArgs(argv: string[]): Map<string, string | boolean> {
-  const out = new Map<string, string | boolean>();
-  for (let i = 0; i < argv.length; i++) {
-    const tok = argv[i]!;
-    if (!tok.startsWith("--")) continue;
-    const key = tok.slice(2);
-    const next = argv[i + 1];
-    if (next === undefined || next.startsWith("--")) {
-      out.set(key, true);
-    } else {
-      out.set(key, next);
-      i++;
-    }
-  }
-  return out;
+interface SessionSpec {
+  backend: AgentSessionSettings["backend"];
+  provider: AgentSessionSettings["provider"];
+  model: string;
+  agent: string;
+  target: Target;
+  carryContext?: string;
+  prompt?: string;
+  promptFile?: string;
+  out?: string;
+  dryRun?: boolean;
 }
 
-function req(args: Map<string, string | boolean>, key: string): string {
-  const v = args.get(key);
-  if (typeof v !== "string") throw new Error(`missing required --${key}`);
-  return v;
+function readSpec(arg: string | undefined): SessionSpec {
+  let text: string;
+  if (arg === undefined || arg === "-") {
+    text = readFileSync(0, "utf8"); // stdin
+  } else if (arg.trimStart().startsWith("{")) {
+    text = arg; // inline JSON
+  } else {
+    text = readFileSync(arg, "utf8"); // file path
+  }
+  return JSON.parse(text) as SessionSpec;
 }
 
-function buildTarget(args: Map<string, string | boolean>): Target {
-  const branch = req(args, "branch");
-  if (args.has("repo-path")) {
-    return { kind: "local", repoPath: req(args, "repo-path"), branch };
-  }
-  const repo = req(args, "repo");
-  const issueRaw = args.get("issue");
-  return {
-    kind: "remote",
-    repo,
-    branch,
-    ...(typeof issueRaw === "string" ? { issue: Number(issueRaw) } : {}),
-  };
+function required<T>(value: T | undefined, name: string): T {
+  if (value === undefined || value === null) throw new Error(`spec is missing "${name}"`);
+  return value;
 }
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   if (cmd !== "run") {
-    process.stderr.write("usage: agent-session run [options]  (see header of cli.ts)\n");
+    process.stderr.write("usage: agent-session run <spec.json | '{…}' | - >  [--dry-run]\n");
     process.exit(cmd ? 1 : 0);
   }
-  const args = parseArgs(rest);
+
+  const flags = rest.filter((a) => a.startsWith("--"));
+  const positional = rest.find((a) => !a.startsWith("--"));
+  const spec = readSpec(positional);
 
   const settings: AgentSessionSettings = {
-    backend: req(args, "backend") as AgentSessionSettings["backend"],
-    provider: req(args, "provider") as AgentSessionSettings["provider"],
-    model: req(args, "model"),
-    agent: req(args, "agent"),
-    target: buildTarget(args),
+    backend: required(spec.backend, "backend"),
+    provider: required(spec.provider, "provider"),
+    model: required(spec.model, "model"),
+    agent: required(spec.agent, "agent"),
+    target: required(spec.target, "target"),
+    ...(spec.carryContext !== undefined ? { carryContext: spec.carryContext } : {}),
   };
 
-  const promptPath = req(args, "prompt");
-  const prompt = readFileSync(promptPath, "utf8");
-  const outDir = (args.get("out") as string) || join(process.cwd(), ".session");
-  const sessionId = `sess-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  const prompt = spec.prompt ?? (spec.promptFile ? readFileSync(spec.promptFile, "utf8") : undefined);
+  required(prompt, 'prompt" or "promptFile');
 
-  if (args.get("dry-run")) {
+  const outDir = spec.out ?? join(process.cwd(), ".session");
+  const sessionId = `sess-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  const dryRun = spec.dryRun || flags.includes("--dry-run");
+
+  if (dryRun) {
     process.stdout.write(
-      JSON.stringify({ plan: "dry-run", sessionId, outDir, settings, promptBytes: prompt.length }, null, 2) + "\n",
+      JSON.stringify({ plan: "dry-run", sessionId, outDir, settings, promptBytes: prompt!.length }, null, 2) + "\n",
     );
     return;
   }
 
-  const result = await runSession({ sessionId, settings, prompt, outDir });
+  const result = await runSession({ sessionId, settings, prompt: prompt!, outDir });
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
 }
 
