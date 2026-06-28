@@ -24,7 +24,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Daytona, type Sandbox } from "@daytonaio/sdk";
+import { Daytona, Image, type Sandbox, type CreateSandboxFromImageParams } from "@daytonaio/sdk";
 import type { AgentSessionSettings } from "@automations/core";
 import {
   registerBackend,
@@ -69,54 +69,68 @@ class DaytonaBackend implements Backend {
     return this.sandbox;
   }
 
-  /** Raw executeCommand → {exitCode, stdout}. */
-  private async run(command: string, log: SessionLog, env?: Record<string, string>, timeoutMs?: number): Promise<ExecResult> {
+  /** Raw executeCommand for setup/bookkeeping. No cwd by default — passing a cwd
+   *  that doesn't exist yet (e.g. /workspace before we create it) makes the
+   *  toolbox fail with a misleading "fork/exec /usr/bin/bash" error. */
+  private async run(command: string, log: SessionLog, env?: Record<string, string>, timeoutMs?: number, cwd?: string): Promise<ExecResult> {
     const startedAt = Date.now();
     const hb = setInterval(() => log.emit("backend", "info", `still running (${Math.round((Date.now() - startedAt) / 1000)}s) in sandbox`), 30_000);
     try {
-      const r = await this.box().process.executeCommand(command, WORKDIR, env, timeoutMs ? Math.ceil(timeoutMs / 1000) : undefined);
+      const r = await this.box().process.executeCommand(command, cwd, env, timeoutMs ? Math.ceil(timeoutMs / 1000) : undefined);
       return { exitCode: r.exitCode, stdout: r.result ?? "", stderr: "" };
     } finally {
       clearInterval(hb);
     }
   }
 
+  /** Run a setup command and throw with context if it fails. */
+  private async must(command: string, log: SessionLog, timeoutMs?: number): Promise<string> {
+    const r = await this.run(command, log, undefined, timeoutMs);
+    if (r.exitCode !== 0) throw new Error(`sandbox setup failed (${command.slice(0, 60)}…): exit ${r.exitCode}: ${r.stdout.slice(-500)}`);
+    return r.stdout;
+  }
+
   async prepare(settings: AgentSessionSettings, log: SessionLog): Promise<PreparedBackend> {
     if (!process.env.DAYTONA_API_KEY) throw new Error("DAYTONA_API_KEY is not set");
     this.daytona = new Daytona();
-    log.emit("backend", "info", `creating Daytona sandbox from ${IMAGE}…`);
-    // create() accepts an image-based param at runtime; the published type only
-    // names the snapshot variant, so cast through the param type.
-    this.sandbox = await this.daytona.create({ image: IMAGE } as Parameters<Daytona["create"]>[0], { timeout: 180 });
+    // Bake the toolchain INTO the image (pi on a node base that already has
+    // git/bash/curl), mirroring the prototype's build_image. Passing
+    // onSnapshotCreateLogs makes the SDK WAIT for the image build to finish —
+    // without it the sandbox comes up on a minimal default image (no bash).
+    log.emit("backend", "info", `building sandbox image from ${IMAGE} (pi baked in)…`);
+    const image = Image.base(IMAGE).runCommands("npm install -g @mariozechner/pi-coding-agent");
+    const params = { image } as CreateSandboxFromImageParams;
+    this.sandbox = await this.daytona.create(params, {
+      timeout: 600,
+      onSnapshotCreateLogs: (line: string) => {
+        const t = line.trim();
+        if (t) log.emit("backend", "debug", `[image build] ${t}`);
+      },
+    });
     log.emit("backend", "info", `sandbox ${this.sandbox.id} ready`);
+
+    // Create dirs FIRST (no cwd — /workspace doesn't exist yet).
+    await this.must(`mkdir -p ${WORKDIR} ${SCRATCH}`, log);
 
     // Get the working tree IN (no bind mount).
     if (settings.target.kind === "local") {
       log.emit("backend", "info", `uploading local repo ${settings.target.repoPath} → ${WORKDIR} (tar+upload, no bind mount)`);
       const tgz = await hostTar(settings.target.repoPath);
       await this.sandbox.fs.uploadFile(tgz, "/tmp/repo.tgz");
-      await this.run(`mkdir -p ${WORKDIR} && tar xzf /tmp/repo.tgz -C ${WORKDIR}`, log);
+      await this.must(`tar xzf /tmp/repo.tgz -C ${WORKDIR}`, log);
     } else {
       const url = `https://github.com/${settings.target.repo}.git`;
       log.emit("backend", "info", `cloning ${url} (branch ${settings.target.branch}) → ${WORKDIR}`);
       await this.sandbox.git.clone(url, WORKDIR, settings.target.branch);
     }
 
-    await this.run(`mkdir -p ${SCRATCH}`, log);
-    await this.run(
-      `git config --global --add safe.directory ${WORKDIR}; ` +
-        `git config --global user.email agent@automations.local; ` +
+    // git identity so the agent can commit (host owns the push); trust the tree.
+    await this.must(
+      `git config --global --add safe.directory ${WORKDIR} && ` +
+        `git config --global user.email agent@automations.local && ` +
         `git config --global user.name 'automations agent'`,
       log,
     );
-
-    const has = await this.run(`command -v pi || true`, log);
-    if (!has.stdout.trim()) {
-      log.emit("backend", "info", "installing pi in sandbox (npm i -g @mariozechner/pi-coding-agent)…");
-      const inst = await this.run(`npm i -g @mariozechner/pi-coding-agent`, log, undefined, 5 * 60 * 1000);
-      if (inst.exitCode !== 0) throw new Error(`pi install failed: ${inst.stdout.slice(-2000)}`);
-      log.emit("backend", "info", "pi installed");
-    }
 
     return { workdir: WORKDIR, scratchDir: SCRATCH };
   }
