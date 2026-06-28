@@ -26,6 +26,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSessionSettings, Target } from "@automations/core";
 import { runSession } from "./session.ts";
+import { writeTimeline } from "./timeline.ts";
 
 interface SessionSpec {
   backend: AgentSessionSettings["backend"];
@@ -59,8 +60,25 @@ function required<T>(value: T | undefined, name: string): T {
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
+
+  // `timeline <session-dir>` — (re)derive the sorted, readable timeline.log from
+  // a session's per-source logs. Runs automatically at the end of every session;
+  // this command lets you regenerate it on any out dir.
+  if (cmd === "timeline") {
+    const dir = rest.find((a) => !a.startsWith("--"));
+    if (!dir) {
+      process.stderr.write("usage: agent-session timeline <session-out-dir>\n");
+      process.exit(1);
+    }
+    const { file, count } = writeTimeline(dir);
+    process.stdout.write(`wrote ${file} (${count} entries)\n`);
+    return;
+  }
+
   if (cmd !== "run") {
-    process.stderr.write("usage: agent-session run <spec.json | '{…}' | - >  [--dry-run]\n");
+    process.stderr.write(
+      "usage:\n  agent-session run <spec.json | '{…}' | - > [--dry-run]\n  agent-session timeline <session-out-dir>\n",
+    );
     process.exit(cmd ? 1 : 0);
   }
 

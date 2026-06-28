@@ -15,6 +15,7 @@ import type { AgentSession, AgentSessionSettings, Blackboard, SessionStatus } fr
 import { resolveBackend } from "./backends/index.ts";
 import { resolveProvider } from "./providers/index.ts";
 import { SessionLog } from "./logging.ts";
+import { writeTimeline } from "./timeline.ts";
 
 // Register the adapters that ship with the runner. Importing for side effects.
 import "./backends/local.ts";
@@ -123,6 +124,11 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
     throw err;
   } finally {
     await backend.dispose(log);
+    // Derive the sorted, readable timeline once the session is fully done — even
+    // on failure. Emit the meta line first so it's included in the timeline.
+    log.emit("orchestrator", "info", "writing chronological timeline → timeline.log");
+    const { count } = writeTimeline(outDir);
+    log.emit("orchestrator", "debug", `timeline.log written (${count} entries)`);
   }
 
   return { sessionId, output, outDir };
