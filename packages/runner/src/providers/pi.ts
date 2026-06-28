@@ -34,7 +34,7 @@ async function gitHead(backend: Backend, cwd: string, log: SessionLog): Promise<
 class PiProvider implements Provider {
   readonly kind = "pi";
 
-  async run({ settings, backend, workdir, prompt, sessionDir, log }: ProviderRunInput): Promise<Blackboard> {
+  async run({ settings, backend, workdir, prompt, sessionDir, clockOffsetMs, log }: ProviderRunInput): Promise<Blackboard> {
     const key = process.env.OPENROUTER_API_KEY;
     if (!key) throw new Error("OPENROUTER_API_KEY is not set");
     mkdirSync(sessionDir, { recursive: true });
@@ -65,7 +65,7 @@ class PiProvider implements Provider {
 
     const res = await backend.exec(cmd, opts, log);
 
-    const sessionFile = this.emitTranscript(sessionDir, log);
+    const sessionFile = this.emitTranscript(sessionDir, log, clockOffsetMs);
 
     if (res.exitCode !== 0) {
       throw new Error(
@@ -89,8 +89,18 @@ class PiProvider implements Provider {
     };
   }
 
-  /** Find the pi session JSONL and stream each block out as `agent` log lines. */
-  private emitTranscript(sessionDir: string, log: SessionLog): string | null {
+  /** Normalize a pi-clock ISO timestamp onto the host timeline. */
+  private hostTs(raw: unknown, offsetMs: number): string | undefined {
+    if (typeof raw !== "string") return undefined;
+    const ms = Date.parse(raw);
+    if (Number.isNaN(ms)) return undefined;
+    return new Date(ms + offsetMs).toISOString();
+  }
+
+  /** Find the pi session JSONL and stream each block out as `agent` log lines,
+   *  each stamped with pi's REAL recorded time (offset to host clock) so the
+   *  unified timeline preserves real-life order. */
+  private emitTranscript(sessionDir: string, log: SessionLog, offsetMs: number): string | null {
     let files: string[] = [];
     try {
       files = readdirSync(sessionDir, { recursive: true, encoding: "utf8" }).filter((f) =>
@@ -127,6 +137,8 @@ class PiProvider implements Provider {
       const role = msg["role"];
       const content = msg["content"];
       if (!Array.isArray(content)) continue;
+      // pi's real recording time for this message, normalized to the host clock.
+      const ts = this.hostTs(obj["timestamp"], offsetMs);
 
       if (role === "user") {
         // First user message is the prompt we already have; skip it.
@@ -135,29 +147,33 @@ class PiProvider implements Provider {
           continue;
         }
         const text = this.blocksText(content);
-        if (text) log.emit("agent", "info", text, { kind: "user" });
+        if (text) log.emit("agent", "info", text, { kind: "user" }, ts);
       } else if (role === "assistant") {
         for (const block of content) {
           if (typeof block !== "object" || block === null) continue;
           const b = block as Record<string, unknown>;
           if (b["type"] === "thinking" && b["thinking"]) {
-            log.emit("agent", "debug", String(b["thinking"]).trim(), { kind: "thinking" });
+            log.emit("agent", "debug", String(b["thinking"]).trim(), { kind: "thinking" }, ts);
           } else if (b["type"] === "text" && b["text"]) {
-            log.emit("agent", "info", String(b["text"]).trim(), { kind: "assistant" });
+            log.emit("agent", "info", String(b["text"]).trim(), { kind: "assistant" }, ts);
           } else if (b["type"] === "toolCall") {
-            log.emit("agent", "info", `→ ${String(b["name"] ?? "tool")}`, {
-              kind: "tool-call",
-              tool: b["name"],
-              arguments: b["arguments"],
-            });
+            log.emit(
+              "agent",
+              "info",
+              `→ ${String(b["name"] ?? "tool")}`,
+              { kind: "tool-call", tool: b["name"], arguments: b["arguments"] },
+              ts,
+            );
           }
         }
       } else if (role === "toolResult") {
-        log.emit("agent", "info", `← ${String(msg["toolName"] ?? "tool")}`, {
-          kind: "tool-result",
-          tool: msg["toolName"],
-          text: this.blocksText(content).slice(0, 2000),
-        });
+        log.emit(
+          "agent",
+          "info",
+          `← ${String(msg["toolName"] ?? "tool")}`,
+          { kind: "tool-result", tool: msg["toolName"], text: this.blocksText(content).slice(0, 2000) },
+          ts,
+        );
       }
     }
     return path;

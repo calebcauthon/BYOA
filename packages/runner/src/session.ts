@@ -70,6 +70,18 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
   const { workdir } = await backend.prepare(settings, log);
   log.emit("backend", "info", `backend ready: ${backend.kind}`, { workdir });
 
+  // Clock sync up front: sample the backend clock between two host readings and
+  // take the midpoint, so timestamps recorded inside the backend (pi's
+  // transcript) can be normalized onto the host's real timeline. ~0 for local.
+  const hostBefore = Date.now();
+  const backendNow = await backend.now(log);
+  const hostAfter = Date.now();
+  const clockOffsetMs = Math.round((hostBefore + hostAfter) / 2 - backendNow);
+  log.emit("orchestrator", "info", `clock sync: backend offset ${clockOffsetMs}ms`, {
+    clockOffsetMs,
+    rttMs: hostAfter - hostBefore,
+  });
+
   // If our out dir lands inside the working tree, keep it out of git so the
   // agent never commits our scratch and change-detection isn't fooled by it.
   // (Prototype lesson — .git/info/exclude.) Local-fs only; sandbox handles its
@@ -86,7 +98,7 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
   const sessionDir = join(outDir, "pi-session");
   let output: Blackboard = {};
   try {
-    output = await provider.run({ settings, backend, workdir, prompt, sessionDir, log });
+    output = await provider.run({ settings, backend, workdir, prompt, sessionDir, clockOffsetMs, log });
     log.emit("orchestrator", "info", `session ${sessionId} finished`);
     writeRecord("done", { finishedAt: new Date().toISOString(), output });
   } catch (err) {

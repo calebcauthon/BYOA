@@ -34,9 +34,16 @@ export class SessionLog {
     level: LogLevel,
     message: string,
     data?: Record<string, unknown>,
+    /**
+     * Real event time, normalized to the HOST clock. Pass this when re-emitting
+     * something that happened earlier (e.g. a pi transcript block parsed after
+     * the fact) so the unified timeline reflects real-life order, not parse time.
+     * Defaults to now() for things happening live on the host.
+     */
+    ts?: string,
   ): void {
     const entry: LogEntry = {
-      ts: new Date().toISOString(),
+      ts: ts ?? new Date().toISOString(),
       source,
       level,
       sessionId: this.sessionId,

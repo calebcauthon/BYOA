@@ -28,6 +28,11 @@ class LocalBackend implements Backend {
     return { workdir };
   }
 
+  async now(): Promise<number> {
+    // Bare metal shares the host clock; offset will be ~0.
+    return Date.now();
+  }
+
   async exec(cmd: string[], opts: ExecOpts, log: SessionLog): Promise<ExecResult> {
     const [bin, ...args] = cmd;
     if (!bin) throw new Error("exec: empty command");

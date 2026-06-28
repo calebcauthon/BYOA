@@ -17,6 +17,8 @@ export interface ProviderRunInput {
   prompt: string;
   /** a directory the runner owns for this session's transcript/session files */
   sessionDir: string;
+  /** ms to ADD to a backend-clock timestamp to get host ("real") time (§ clock sync) */
+  clockOffsetMs: number;
   log: SessionLog;
 }
 

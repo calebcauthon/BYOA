@@ -40,6 +40,14 @@ export interface Backend {
   readonly kind: string;
   /** stand up the execution environment + working tree; return the workdir */
   prepare(settings: AgentSessionSettings, log: SessionLog): Promise<{ workdir: string }>;
+  /**
+   * The backend's current wall-clock as epoch milliseconds. The orchestrator
+   * samples this once up front to compute the offset between the backend's clock
+   * and the host clock (the canonical "real" timeline), so timestamps recorded
+   * *inside* the backend (e.g. pi's transcript) can be normalized to host time.
+   * Local/bare-metal shares the host clock, so this is just Date.now().
+   */
+  now(log: SessionLog): Promise<number>;
   /** run a command in the environment, streaming output to the backend log */
   exec(cmd: string[], opts: ExecOpts, log: SessionLog): Promise<ExecResult>;
   /** tear down (or keep, for debugging) */
