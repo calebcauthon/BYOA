@@ -764,13 +764,12 @@ function SessionCard({ session, index }: { session: AgentSession; index: number 
     <div className="session-card" id={session.id}>
       <div className="session-heading">
         <span className="session-number">{String(index + 1).padStart(2, "0")}</span>
-        <div><strong>Agent session</strong><span>started {formatClock(session.startedAt)}</span></div>
-        <div className="session-runtime"><Bot size={13} /> {providerLabel(session.settings.provider)} <span>·</span> {session.settings.model} <span>·</span> {backendLabel(session.settings.backend)}</div>
+        <p className="session-prompt">{showMore ? promptText : `${promptText.slice(0, 180)}${promptText.length > 180 ? "…" : ""}`}</p>
       </div>
-      <p>{showMore ? promptText : `${promptText.slice(0, 180)}${promptText.length > 180 ? "…" : ""}`}</p>
       {session.error && <p className="prompt-more">Error: {session.error}</p>}
       <div className="session-footer">
         <span><GitBranch size={12} /> {targetBranch(session.settings.target)}</span>
+        <span className="session-runtime"><Bot size={12} /> {providerLabel(session.settings.provider)} <span>·</span> {session.settings.model} <span>·</span> {backendLabel(session.settings.backend)}</span>
         <span><Link2 size={12} /> {session.status}</span>
         <button onClick={() => setShowMore((v) => !v)}>{showMore ? "Collapse prompt" : "Full prompt"} <ChevronDown size={11} /></button>
       </div>
@@ -898,8 +897,9 @@ function LogEntryView({ entry }: { entry: TimelineEntry }) {
   return <p className="agent-copy">{entry.message}</p>;
 }
 
-function TimelineForSession({ entries }: { entries: TimelineEntry[] }) {
+function TimelineForSession({ entries, prompt, label = "Agent trace" }: { entries: TimelineEntry[]; prompt?: string; label?: string }) {
   const [infraOpen, setInfraOpen] = useState(false);
+  const [traceCollapsed, setTraceCollapsed] = useState(false);
   const infra = entries.filter((entry) => entry.source === "orchestrator" || entry.source === "backend" || entry.source === "workflow");
   const main = entries.filter((entry) => entry.source === "agent" || entry.source === "workload");
   const firstInfra = infra.slice(0, 2);
@@ -935,8 +935,14 @@ function TimelineForSession({ entries }: { entries: TimelineEntry[] }) {
       <section className="agent-turn">
         <div className="turn-rail"><span><Bot size={14} /></span><i /></div>
         <div className="turn-body">
-          <div className="turn-label"><strong>Agent trace</strong><span>{main.length ? formatClock(main[0]?.ts) : "waiting"}</span></div>
-          {mainGroups.length ? mainGroups.map((item, index) => (
+          <button className="turn-label turn-toggle" onClick={() => setTraceCollapsed((v) => !v)} aria-expanded={!traceCollapsed}>
+            <ChevronRight size={12} className={traceCollapsed ? "" : "rotated"} />
+            <strong>{label}</strong>
+            <span>{main.length ? formatClock(main[0]?.ts) : "waiting"}</span>
+            {main.length > 0 && <span className="turn-collapsed-hint">{mainGroups.length} step{mainGroups.length === 1 ? "" : "s"}</span>}
+            {prompt && <span className="turn-collapsed-prompt">{prompt.trim().split("\n")[0]}</span>}
+          </button>
+          {traceCollapsed ? null : mainGroups.length ? mainGroups.map((item, index) => (
             Array.isArray(item)
               ? <WorkingGroup entries={item} key={`working-${index}-${item[0]?.ts ?? ""}`} />
               : <LogEntryView entry={item} key={`${item.ts}-${item.message}`} />
@@ -1058,7 +1064,7 @@ function ConversationView({
           {rendered.sessions.length ? rendered.sessions.map((session, index) => (
             <div className="session-block" key={session.id}>
               <SessionCard session={session} index={index} />
-              <TimelineForSession entries={entriesBySession.get(session.id) ?? []} />
+              <TimelineForSession entries={entriesBySession.get(session.id) ?? []} prompt={session.prompt?.task || session.prompt?.assembled || ""} label={providerLabel(session.settings.provider)} />
             </div>
           )) : (
             <div className="empty-state">
