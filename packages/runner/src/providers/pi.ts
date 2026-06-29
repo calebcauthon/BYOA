@@ -20,7 +20,7 @@ import type { AgentResult, Blackboard, Usage } from "@automations/core";
 import { registerProvider, type Provider, type ProviderRunInput } from "./index.ts";
 import type { Backend, BackendFile, ExecOpts } from "../backends/index.ts";
 import type { SessionLog } from "../logging.ts";
-import { publishProtocol, readPublish } from "../publish.ts";
+import { readPublish } from "../publish.ts";
 
 const PI_TIMEOUT_MS = Number(process.env.RUNNER_PI_TIMEOUT_MS ?? 30 * 60 * 1000);
 const HEARTBEAT_MS = 30 * 1000;
@@ -54,7 +54,7 @@ class PiProvider implements Provider {
     ];
     const opts: ExecOpts = {
       cwd: workdir,
-      input: `${prompt}${publishProtocol(scratchDir)}`,
+      input: prompt, // already includes the publish protocol (appended in runSession)
       env: { OPENROUTER_API_KEY: key },
       timeoutMs: PI_TIMEOUT_MS,
       heartbeatMs: HEARTBEAT_MS,

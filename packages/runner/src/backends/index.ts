@@ -39,6 +39,16 @@ export interface ExecOpts {
   /** emit raw stdout chunks to the log (default true). Set false when the caller
    *  parses the stream itself via onStdout and would otherwise double-log noise. */
   logStdout?: boolean;
+  /** secrets to mask (→ "***") in the logged command + output, e.g. a push token */
+  redact?: string[];
+}
+
+/** Mask any redact strings in a log line so secrets never hit the logs. */
+export function redactStr(s: string, redact?: string[]): string {
+  if (!redact) return s;
+  let out = s;
+  for (const secret of redact) if (secret) out = out.split(secret).join("***");
+  return out;
 }
 
 /** A file read back FROM the backend's filesystem (which may be a container). */

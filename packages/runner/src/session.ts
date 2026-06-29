@@ -12,10 +12,11 @@
 import { join, relative, isAbsolute } from "node:path";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import type { AgentSession, AgentSessionSettings, Blackboard, SessionStatus } from "@automations/core";
-import { resolveBackend } from "./backends/index.ts";
+import { resolveBackend, type Backend } from "./backends/index.ts";
 import { resolveProvider } from "./providers/index.ts";
 import { SessionLog } from "./logging.ts";
 import { writeTimeline } from "./timeline.ts";
+import { publishProtocol } from "./publish.ts";
 
 // Register the adapters that ship with the runner. Importing for side effects.
 import "./backends/local.ts";
@@ -25,9 +26,26 @@ import "./providers/pi.ts";
 import "./providers/claude.ts";
 
 // Re-export so the orchestrator can append to a session's logs + refresh its
-// timeline (e.g. when the liaison publishes after the session finishes).
+// timeline, and type its afterWork hook against the live backend.
 export { SessionLog } from "./logging.ts";
 export { writeTimeline } from "./timeline.ts";
+export type { Backend, ExecOpts, BackendFile } from "./backends/index.ts";
+
+/**
+ * Called after the agent finishes but BEFORE the backend is disposed, with the
+ * live backend in hand. This is the seam the orchestrator's GitHub liaison uses
+ * to push from wherever the commits actually live (host for local/container,
+ * inside the sandbox for daytona). The runner itself stays GitHub-free — it just
+ * offers the seam; standalone runs pass nothing.
+ */
+export type AfterWork = (ctx: {
+  backend: Backend;
+  workdir: string;
+  settings: AgentSessionSettings;
+  /** the blackboard the agent wrote ({ [agent]: AgentResult }) */
+  output: Blackboard;
+  log: SessionLog;
+}) => Promise<void>;
 
 export interface RunSessionInput {
   sessionId: string;
@@ -36,6 +54,8 @@ export interface RunSessionInput {
   prompt: string;
   /** directory to write this session's logs + artifacts into */
   outDir: string;
+  /** optional post-work, pre-dispose hook (the orchestrator's publish step) */
+  afterWork?: AfterWork;
 }
 
 export interface RunSessionResult {
@@ -59,15 +79,17 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
   });
 
   // Persist what we were asked to run, so a session is self-documenting and
-  // reproducible (§2.9). The prompt is a stored artifact of every session (§3.1).
+  // reproducible (§2.9). `assembledPrompt` becomes the EXACT text sent to the
+  // agent once the protocol suffix is appended (after prepare); prompt.md +
+  // session.json record that, not just the bare task.
   const startedAt = new Date().toISOString();
-  writeFileSync(join(outDir, "prompt.md"), prompt, "utf8");
+  let assembledPrompt = prompt;
   const writeRecord = (status: SessionStatus, extra: Partial<AgentSession> = {}): void => {
     const record: AgentSession = {
       id: sessionId,
       conversationId: "", // assigned by the orchestrator (M2); standalone runs have none
       settings,
-      prompt: { persona: settings.agent, task: prompt, assembled: prompt },
+      prompt: { persona: settings.agent, task: prompt, assembled: assembledPrompt },
       status,
       startedAt,
       ...extra,
@@ -128,9 +150,26 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
       }
     }
 
-    output = await provider.run({ settings, backend, workdir, prompt, scratchDir, clockOffsetMs, log });
+    // Append the publish protocol ONCE here (it needs the backend's scratchDir),
+    // persist the exact text we send, and hand it to the provider — so the
+    // recorded prompt is the prompt the agent actually got (§2.9).
+    assembledPrompt = `${prompt}${publishProtocol(scratchDir)}`;
+    writeFileSync(join(outDir, "prompt.md"), assembledPrompt, "utf8");
+
+    output = await provider.run({ settings, backend, workdir, prompt: assembledPrompt, scratchDir, clockOffsetMs, log });
     log.emit("orchestrator", "info", `session ${sessionId} finished`);
     writeRecord("done", { finishedAt: new Date().toISOString(), output });
+
+    // Post-work, pre-dispose seam: the orchestrator publishes from the live
+    // backend (e.g. push from where the commits actually are). Degrade-don't-die:
+    // a hook failure is logged but never crashes the session.
+    if (input.afterWork) {
+      try {
+        await input.afterWork({ backend, workdir, settings, output, log });
+      } catch (err) {
+        log.emit("orchestrator", "error", `afterWork hook failed: ${String(err)}`);
+      }
+    }
   } catch (err) {
     log.emit("orchestrator", "error", `session ${sessionId} failed: ${String(err)}`);
     writeRecord("failed", { finishedAt: new Date().toISOString(), error: String(err) });

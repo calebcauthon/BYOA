@@ -4,51 +4,45 @@
  * the agent-authored `pr-description`, and posts the agent-authored `comment`s.
  * The agent never pushes; it only authored what to say (in result.publish).
  *
- * Uses the `gh` CLI (already authenticated) for API calls and `git` for the push.
- * M3 scope: works for a LOCAL checkout that has a GitHub `origin` (local/container
- * backends — commits are on the host repo). Daytona push-from-sandbox is a later
- * slice.
+ * Runs as the runner's afterWork hook — i.e. with the LIVE backend, before
+ * dispose — so the push originates from wherever the commits actually are:
+ *   • local/container → the host / bind-mounted repo
+ *   • daytona         → inside the sandbox (the commits live there, not on host)
+ * The push goes through `backend.exec` (adapter-clean), authed with a one-shot
+ * token URL the orchestrator owns (`gh auth token`); the token is redacted from
+ * logs and never written to .git/config. The GitHub API calls (PR, comment) are
+ * host-side via `gh`.
  */
 import { spawn } from "node:child_process";
-import type { AgentResult, LogLevel, LogSource, Publication } from "@automations/core";
+import type { AgentResult, Publication } from "@automations/core";
+import type { Backend, SessionLog } from "@automations/runner";
 
-/** Minimal logger the liaison needs — the runner's SessionLog satisfies it. */
-export interface Logger {
-  emit(source: LogSource, level: LogLevel, message: string, data?: Record<string, unknown>): void;
-}
-
-interface Run {
+interface HostRun {
   code: number;
   stdout: string;
   stderr: string;
 }
 
-function run(bin: string, args: string[], opts: { cwd?: string; input?: string } = {}): Promise<Run> {
+/** Run a host command (git/gh) capturing output. */
+function host(bin: string, args: string[], input?: string): Promise<HostRun> {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, opts.cwd ? { cwd: opts.cwd } : {});
+    const child = spawn(bin, args);
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
     child.on("close", (code) => resolve({ code: code ?? -1, stdout: stdout.trim(), stderr: stderr.trim() }));
     child.on("error", (e) => resolve({ code: -1, stdout: "", stderr: String(e) }));
-    if (opts.input !== undefined) child.stdin.write(opts.input);
+    if (input !== undefined) child.stdin.write(input);
     child.stdin.end();
   });
 }
 
-/** owner/name from the repo's origin remote, or null if there isn't one. */
-async function originSlug(repoPath: string): Promise<string | null> {
-  const r = await run("git", ["-C", repoPath, "remote", "get-url", "origin"]);
-  if (r.code !== 0) return null;
-  const m = r.stdout.match(/github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-  return m ? m[1]! : null;
-}
-
 export interface PublishContext {
-  repoPath: string;
+  backend: Backend;
+  /** working tree path INSIDE the backend (host path for local; /workspace for daytona) */
+  workdir: string;
   branch: string;
-  /** the agent's standardized result; we read result.publish */
   result: AgentResult;
 }
 
@@ -59,66 +53,85 @@ export interface PublishOutcome {
   skipped?: string;
 }
 
-function find(pubs: Publication[], kind: Publication["kind"]): Publication[] {
-  return pubs.filter((p) => p.kind === kind);
+function pubs<K extends Publication["kind"]>(list: Publication[], kind: K): Extract<Publication, { kind: K }>[] {
+  return list.filter((p): p is Extract<Publication, { kind: K }> => p.kind === kind);
 }
 
-/** Push the branch, ensure a draft PR (body from pr-description), post comments. */
-export async function publish(ctx: PublishContext, log: Logger): Promise<PublishOutcome> {
-  const { repoPath, branch, result } = ctx;
-  const pubs = result.publish ?? [];
+/** owner/name from the backend repo's origin remote (works wherever the repo is). */
+async function slugFrom(ctx: PublishContext, log: SessionLog): Promise<string | null> {
+  const r = await ctx.backend.exec(["git", "remote", "get-url", "origin"], { cwd: ctx.workdir }, log);
+  if (r.exitCode !== 0) return null;
+  const m = r.stdout.trim().match(/github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?\s*$/);
+  return m ? m[1]! : null;
+}
 
-  const slug = await originSlug(repoPath);
+export async function publish(ctx: PublishContext, log: SessionLog): Promise<PublishOutcome> {
+  const { backend, workdir, branch, result } = ctx;
+  const list = result.publish ?? [];
+
+  if (!result.changed) {
+    log.emit("orchestrator", "info", "publish skipped: agent made no changes");
+    return { pushed: false, commentsPosted: 0, skipped: "no-change" };
+  }
+  const slug = await slugFrom(ctx, log);
   if (!slug) {
-    log.emit("orchestrator", "info", "publish skipped: no github origin on the checkout");
+    log.emit("orchestrator", "info", "publish skipped: checkout has no github origin");
     return { pushed: false, commentsPosted: 0, skipped: "no-origin" };
   }
 
-  // 1) push (deterministic) — the orchestrator owns the remote
+  // 1) push — through the backend, from wherever the commits are. One-shot token
+  // URL (no token persisted in .git/config); token redacted from logs.
+  const token = (await host("gh", ["auth", "token"])).stdout.trim();
+  if (!token) {
+    log.emit("orchestrator", "error", "publish: no gh token (gh auth token)");
+    return { pushed: false, commentsPosted: 0, skipped: "no-token" };
+  }
+  const authedUrl = `https://x-access-token:${token}@github.com/${slug}.git`;
   log.emit("orchestrator", "info", `pushing ${branch} → ${slug}`);
-  const push = await run("git", ["-C", repoPath, "push", "-u", "origin", branch]);
-  if (push.code !== 0) {
-    log.emit("orchestrator", "error", `git push failed: ${push.stderr.slice(-500)}`);
+  const push = await backend.exec(
+    ["git", "push", authedUrl, `HEAD:refs/heads/${branch}`],
+    { cwd: workdir, source: "orchestrator", redact: [token, authedUrl] },
+    log,
+  );
+  if (push.exitCode !== 0) {
+    log.emit("orchestrator", "error", `git push failed: ${push.stdout.slice(-400)}`);
     return { pushed: false, commentsPosted: 0, skipped: "push-failed" };
   }
 
-  // 2) ensure a draft PR; body comes from the agent's pr-description
-  const base = (await run("gh", ["repo", "view", slug, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])).stdout || "master";
-  const desc = find(pubs, "pr-description")[0] as Extract<Publication, { kind: "pr-description" }> | undefined;
+  // 2) ensure a draft PR; description from the agent's pr-description
+  const base = (await host("gh", ["repo", "view", slug, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])).stdout || "master";
+  const desc = pubs(list, "pr-description")[0];
   const title = desc?.title || `agent: ${branch}`;
   const body = desc?.body || "_(no description provided by the agent)_";
 
   let prUrl: string | undefined;
-  const existing = await run("gh", ["pr", "view", branch, "--repo", slug, "--json", "url", "-q", ".url"]);
+  const existing = await host("gh", ["pr", "view", branch, "--repo", slug, "--json", "url", "-q", ".url"]);
   if (existing.code === 0 && existing.stdout) {
     prUrl = existing.stdout;
     log.emit("orchestrator", "info", `PR exists (${prUrl}); updating description`);
-    await run("gh", ["pr", "edit", branch, "--repo", slug, "--title", title, "--body-file", "-"], { input: body });
+    await host("gh", ["pr", "edit", branch, "--repo", slug, "--title", title, "--body-file", "-"], body);
   } else {
-    const create = await run(
+    const create = await host(
       "gh",
       ["pr", "create", "--repo", slug, "--base", base, "--head", branch, "--draft", "--title", title, "--body-file", "-"],
-      { input: body },
+      body,
     );
     if (create.code !== 0) {
-      log.emit("orchestrator", "error", `gh pr create failed: ${create.stderr.slice(-500)}`);
+      log.emit("orchestrator", "error", `gh pr create failed: ${create.stderr.slice(-400)}`);
       return { pushed: true, commentsPosted: 0, skipped: "pr-failed" };
     }
     prUrl = create.stdout.split("\n").pop();
     log.emit("orchestrator", "info", `opened draft PR ${prUrl}`);
   }
 
-  // 3) post the agent-authored comments (template the PR URL in)
+  // 3) post the agent-authored comments
   let commentsPosted = 0;
-  for (const c of find(pubs, "comment") as Extract<Publication, { kind: "comment" }>[]) {
-    const r = await run("gh", ["pr", "comment", branch, "--repo", slug, "--body-file", "-"], { input: c.body });
-    if (r.code === 0) {
-      commentsPosted++;
-      log.emit("orchestrator", "info", `posted comment on PR`);
-    } else {
-      log.emit("orchestrator", "warn", `comment failed: ${r.stderr.slice(-300)}`);
-    }
+  for (const c of pubs(list, "comment")) {
+    const r = await host("gh", ["pr", "comment", branch, "--repo", slug, "--body-file", "-"], c.body);
+    if (r.code === 0) commentsPosted++;
+    else log.emit("orchestrator", "warn", `comment failed: ${r.stderr.slice(-300)}`);
   }
+  if (commentsPosted) log.emit("orchestrator", "info", `posted ${commentsPosted} comment(s) on the PR`);
 
   return { pushed: true, ...(prUrl ? { prUrl } : {}), commentsPosted };
 }

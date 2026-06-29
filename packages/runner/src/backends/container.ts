@@ -18,6 +18,7 @@
 import { spawn } from "node:child_process";
 import type { AgentSessionSettings } from "@automations/core";
 import {
+  redactStr,
   registerBackend,
   type Backend,
   type BackendFile,
@@ -124,7 +125,7 @@ class ContainerBackend implements Backend {
       this.containerId,
       ...cmd,
     ];
-    log.emit("orchestrator", "debug", `exec: ${cmd.join(" ")}`, { cwd: opts.cwd ?? WORKDIR, source: src, via: "docker" });
+    log.emit("orchestrator", "debug", `exec: ${redactStr(cmd.join(" "), opts.redact)}`, { cwd: opts.cwd ?? WORKDIR, source: src, via: "docker" });
 
     return await new Promise<ExecResult>((resolve) => {
       const child = spawn("docker", dargs);
@@ -152,11 +153,11 @@ class ContainerBackend implements Backend {
       child.stdout.on("data", (d) => {
         stdout += d;
         opts.onStdout?.(String(d));
-        if (opts.logStdout !== false) log.emit(src, "info", String(d).trimEnd());
+        if (opts.logStdout !== false) log.emit(src, "info", redactStr(String(d).trimEnd(), opts.redact));
       });
       child.stderr.on("data", (d) => {
         stderr += d;
-        log.emit(src, "warn", String(d).trimEnd());
+        log.emit(src, "warn", redactStr(String(d).trimEnd(), opts.redact));
       });
       child.on("close", (code) => {
         if (heartbeat) clearInterval(heartbeat);

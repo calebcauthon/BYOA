@@ -107,35 +107,37 @@ autocomplete sources.
   *everything*. Per-launch settings (backend, model, branch, skills) are Agent
   Session settings (§3.1) and live in the composer, never the top nav.
 
-**The three panes.** Five surfaces compete for space — registry, issues,
-composer, transcript, artifacts. They resolve into three panes by grouping on
-verb (navigate / act / inspect):
+**Two panes (for now).** Four surfaces — registry, issues, composer, transcript
+— resolve into two panes by grouping on verb (navigate / act). A dedicated
+artifacts pane is **deliberately dropped for now**: diff, screenshots, prompt,
+and logs are not their own surface yet; when they matter they fold **inline into
+the transcript stream** (a diff/screenshot reads better in the flow of what the
+agent did than parked in a side panel). §1.3's transparency requirements still
+hold — they're just satisfied inline, not by a third pane.
 
 ```
-┌─ [▼ Project] · repo ▾ · account ───────────────────────────────────────┐
-├──────────────┬──────────────────────────────────────┬───────────────────┤
-│  RUNS        │  ┌ composer ──────────┐ ┌ issues ───┐ │  DETAIL /          │
-│ (registry)   │  │ repo ▾  backend ▾   │ │ #142     ▸│ │  ARTIFACTS         │
-│ ▸ #142 …     │  │ model ▾  branch ▾   │ │ #139     ▸│ │  diff · shots ·    │
-│ ▸ fix …      │  │ ▢ branch off default│ │ #131     ▸│ │  assembled prompt ·│
-│   ● running  │  │ skills:[browser][+] │ │[insta ↵]  │ │  logs              │
-│   ✓ ready    │  │ > prompt…       [↵] │ └───────────┘ │ (contextual to the │
-│   ⚠ stale    │  └─────────────────────┘               │  selected session) │
-│              │  ─────── transcript stream ────────    │                    │
-└──────────────┴──────────────────────────────────────┴───────────────────┘
-   LEFT = runs        MIDDLE: launch-mode ⇄ reading-mode      RIGHT = artifacts
+┌─ [▼ Project] · repo ▾ · account ─────────────────────────────────────┐
+├──────────────┬───────────────────────────────────────────────────────┤
+│  RUNS        │  ┌ composer ──────────┐ ┌ issues ───┐                  │
+│ (registry)   │  │ repo ▾   agent ▾    │ │ #142     ▸│                  │
+│ ▸ #142 …     │  │ branch ▾ backend ▾  │ │ #139     ▸│                  │
+│ ▸ fix …      │  │ ☑ new branch        │ │ #131     ▸│                  │
+│   ● running  │  │ skills:[browser][+] │ │[insta ↵]  │                  │
+│   ✓ ready    │  │ > prompt…       [↵] │ └───────────┘                  │
+│   ⚠ stale    │  └─────────────────────┘                                │
+│              │  ─────── transcript stream (artifacts inline) ────────  │
+└──────────────┴───────────────────────────────────────────────────────┘
+   LEFT = runs        MIDDLE: launch-mode ⇄ reading-mode (wider now)
 ```
 
 - **Left — Runs registry only.** The §1.1 sidebar: every run in flight for the
   current Project, with honest reconciled status. Always the task-switcher;
-  selecting a run never resets the other panes' scroll/composer state.
+  selecting a run never resets the other pane's scroll/composer state.
 - **Middle — the act pane, with two modes.** *Launch mode* (no run selected):
   the composer and the **issues column** side by side. *Reading mode* (a run
   selected from the left): the issues column yields and the middle becomes the
-  Conversation transcript spine (§1.4). The composer is the single launch
-  surface of §1.2.
-- **Right — Detail / Artifacts.** Contextual to the selected Agent Session:
-  diff, screenshots (inline + lightbox), the assembled prompt, logs (§1.3).
+  Conversation transcript spine (§1.4), with any artifacts rendered inline. The
+  composer is the single launch surface of §1.2.
 
 **Issues are a first-class column (a manual Trigger in UI form).** The issues
 column lists the current repo's GitHub issues. **Insta-prompt:** clicking an
@@ -150,6 +152,113 @@ attach to that one Agent Session. A skill MAY imply a backend capability — the
 **browser skill implies a browser-capable backend**, so selecting it filters or
 warns on the backend dropdown rather than failing at runtime. (Mechanically a
 skill is an input to the session's Runtime, §3.1.)
+
+### 1.8 The composer — the single launch surface
+
+The composer is the middle pane's act surface (§1.7). One control row plus a
+prompt box launches every Agent Session — blank, from-issue, continue, or fork.
+
+```
+┌ composer ───────────────────────────────────────────────────┐
+│ repo ▾ web          agent ▾ pi · opus-4.8     backend ▾ local │
+│ branch ▾ main       ☑ new branch from this    → auto/resolve-…│
+│ skills: [browser ✕] [+]                                       │
+│ ┌──────────────────────────────────────────────────────────┐ │
+│ │ > resolve this…                          (paste images ok)│ │
+│ └──────────────────────────────────────────────────────────┘ │
+│                                          [ Fork ]  [ Launch ↵]│
+└───────────────────────────────────────────────────────────────┘
+```
+
+Each control maps to an Agent Session setting (§3.1) and autocompletes from a
+real source (§1.2):
+
+- **repo ▾** — from `Project.repos`; defaults to the primary, multi-select-capable.
+- **agent ▾** — **one control, program → model.** Pick the agent program /
+  provider (pi / claude-subscription / codex) first; that **constrains the model
+  list**. Reads as a single `pi · opus-4.8` chip. §3.1 keeps provider and model
+  as two settings underneath; the UI just folds them so you can't pick an
+  invalid pair.
+- **backend ▾** — local / container / daytona; filtered by skill capability.
+- **branch ▾ + checkbox** — **base ref + 'new branch' toggle.** `branch ▾` picks
+  the base (default = the repo's default branch). Checkbox **ON** (default) →
+  create an auto-named new branch off it (`auto/resolve-142-login`, editable);
+  **OFF** → commit directly to the picked branch ("just do it on that branch").
+- **skills:[…][+]** — opt-in from the global library (§1.7).
+- **prompt** — accepts pasted images (§1.4).
+
+**Continue and Fork (once a Conversation exists).**
+- **Continue is inline:** a slim composer pinned at the bottom of the transcript
+  continues the Conversation, **inheriting the last Agent Session's settings**
+  (carry base branch / overrides forward, §1.4); you can change any control for
+  the next session.
+- **Fork is per-session:** each prior Agent Session in the transcript exposes a
+  *"Fork from here"* action that opens a fresh composer pre-filled from that
+  point, to explore an alternative branch of the Conversation.
+
+### 1.9 The insta-prompt loop — issue → Conversation → GitHub
+
+Clicking an issue in the column (§1.7) and hitting **[Resolve this ↵]** closes a
+full circle from issue to PR, reusing the composer (§1.8) and the publish model
+(§4.4):
+
+```
+ISSUES column          composer (pre-filled)            §4.4 publish (orchestrator)
+─────────────          ────────────────────             ───────────────────────────
+#142 login bug ▸  ─┐   repo: web                         push auto/issue-142 branch
+  [Resolve this ↵] │→  branch: auto/issue-142 (new)  ─→  open PR  "Fixes #142"
+                   │   prompt: «issue title + body          post agent-authored
+                   │            + link» + "resolve this"     comment on PR (+ issue)
+                   └── → fresh Conversation "#142 login"  ←─ issue auto-closes on merge
+```
+
+- **Default issue list = all open issues** for the current repo, with
+  label/assignee filters available. (The prototype's label-gated polling becomes
+  *one filter*, not the only way in.)
+- **The assembled Prompt inlines title + body + link**, then "resolve this
+  issue." The agent runs in a sandbox and is **not** the GitHub liaison (§2.1),
+  so it cannot fetch the issue itself — the orchestrator gives it the content.
+  No separate summarize call (consistent with §4.4).
+- **Insta-prompt always starts a fresh Conversation**, titled from the issue,
+  with `Target = repo + issue#` and a new auto-named branch off the default.
+- **PR links back with `Fixes #142`** so merging auto-closes the issue. The
+  issue link is carried on the Target, so when §4.4 publishes, the orchestrator
+  can template the issue/PR cross-references at post time.
+
+### 1.10 Reading mode — settings cards as session seams
+
+In reading mode (§1.7) the transcript is one continuous stream, but a
+Conversation is many discrete Agent Sessions (§3.1). The **settings card** makes
+that boundary visible: it is the **read-mode twin of the composer** (§1.8) and
+the **seam between sessions**. Each `Continue`/`Fork` drops a new card into the
+sequence.
+
+```
+╭─ Agent Session 1 ──────────────────────── pi · opus-4.8 · local ─╮
+│ repo web · branch auto/resolve-142 (new from main) · 🌐 browser  │
+│ ┌ prompt ──────────────────────────────────────────────────────┐│
+│ │ resolve this issue #142 login bug …              [show more]  ││
+│ └──────────────────────────────────────────────────────────────┘│
+│ Target acme/web #142                           $0.42 · 3m 12s    │
+╰──────────────────────────────────────────────────────────────────╯
+     … thinking / tool calls / tool results / inline artifacts …
+╭─ Agent Session 2 · continue ─────────────  pi · opus-4.8 · local ╮
+│ inherited · branch auto/resolve-142 · > also fix the redirect    │
+╰──────────────────────────────────────────────────────────────────╯
+```
+
+- **Header** — session index + a `continue`/`fork` marker, plus the at-a-glance
+  triple `provider · model · backend`.
+- **Body** — the session's settings (repo, branch as *base + new*, skills as
+  icons), the prompt (collapsible), the Target link, and cost/time once the
+  accounting gap (§3.3) lands.
+- **Continue/fork cards are lighter** — labelled `inherited`, showing only what
+  *changed* plus the new prompt, so the seam is obvious without repeating the
+  whole settings block.
+- **Density: latest expanded, older collapse to a line.** The newest session's
+  card is expanded; older cards collapse to a one-line summary
+  (`index · provider·model · branch · cost`), click to re-expand. Keeps a long
+  Conversation scannable.
 
 ---
 

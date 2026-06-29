@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { Daytona, Image, type Sandbox, type CreateSandboxFromImageParams } from "@daytonaio/sdk";
 import type { AgentSessionSettings, IgnoreKind } from "@automations/core";
 import {
+  redactStr,
   registerBackend,
   type Backend,
   type BackendFile,
@@ -206,7 +207,7 @@ class DaytonaBackend implements Backend {
       command = `${command} < ${shq(remote)}`;
     }
 
-    log.emit("orchestrator", "debug", `exec: ${cmd.join(" ")}`, { cwd: opts.cwd ?? WORKDIR, source: src, via: "daytona" });
+    log.emit("orchestrator", "debug", `exec: ${redactStr(cmd.join(" "), opts.redact)}`, { cwd: opts.cwd ?? WORKDIR, source: src, via: "daytona" });
     const startedAt = Date.now();
     const hb =
       opts.heartbeatMs && opts.heartbeatMs > 0
@@ -216,7 +217,7 @@ class DaytonaBackend implements Backend {
       const r = await this.box().process.executeCommand(command, opts.cwd ?? WORKDIR, opts.env, opts.timeoutMs ? Math.ceil(opts.timeoutMs / 1000) : undefined);
       const stdout = r.result ?? "";
       opts.onStdout?.(stdout);
-      if (opts.logStdout !== false && stdout.trim()) log.emit(src, "info", stdout.trimEnd());
+      if (opts.logStdout !== false && stdout.trim()) log.emit(src, "info", redactStr(stdout.trimEnd(), opts.redact));
       return { exitCode: r.exitCode, stdout, stderr: "" };
     } finally {
       if (hb) clearInterval(hb);

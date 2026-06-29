@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentSessionSettings } from "@automations/core";
 import {
+  redactStr,
   registerBackend,
   type Backend,
   type BackendFile,
@@ -62,7 +63,7 @@ class LocalBackend implements Backend {
     // The command's output belongs to whatever the caller says it is (§3.2);
     // the "exec:" announcement is always runner bookkeeping.
     const src = opts.source ?? "orchestrator";
-    log.emit("orchestrator", "debug", `exec: ${cmd.join(" ")}`, { cwd: opts.cwd, source: src });
+    log.emit("orchestrator", "debug", `exec: ${redactStr(cmd.join(" "), opts.redact)}`, { cwd: opts.cwd, source: src });
 
     return await new Promise<ExecResult>((resolve) => {
       const child = spawn(bin, args, {
@@ -95,11 +96,11 @@ class LocalBackend implements Backend {
       child.stdout.on("data", (d) => {
         stdout += d;
         opts.onStdout?.(String(d));
-        if (opts.logStdout !== false) log.emit(src, "info", String(d).trimEnd());
+        if (opts.logStdout !== false) log.emit(src, "info", redactStr(String(d).trimEnd(), opts.redact));
       });
       child.stderr.on("data", (d) => {
         stderr += d;
-        log.emit(src, "warn", String(d).trimEnd());
+        log.emit(src, "warn", redactStr(String(d).trimEnd(), opts.redact));
       });
 
       child.on("close", (code) => {

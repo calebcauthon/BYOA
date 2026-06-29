@@ -8,7 +8,7 @@
  * directory so all logs land in one place (§3.2).
  */
 import { mkdirSync } from "node:fs";
-import { runSession, SessionLog, writeTimeline } from "@automations/runner";
+import { runSession, type AfterWork } from "@automations/runner";
 import type {
   AgentResult,
   AgentSession,
@@ -18,7 +18,7 @@ import type {
   EventType,
   Target,
 } from "@automations/core";
-import { publish as ghPublish } from "../github/liaison.ts";
+import { publish as ghPublish, type PublishOutcome } from "../github/liaison.ts";
 import {
   appendEvent,
   getConversation,
@@ -78,31 +78,6 @@ export interface StartSessionInput {
   publish?: boolean;
 }
 
-/** After a session finishes: the orchestrator (sole liaison) pushes the branch,
- *  auto-creates/updates the PR from the agent's pr-description, posts comments.
- *  Logs into the session's own log dir and refreshes its timeline. */
-async function runPublish(convId: string, conv: Conversation, sessionId: string, outDir: string, output: Record<string, unknown>): Promise<void> {
-  if (conv.target.kind !== "local") {
-    emit(convId, "publish_failed", sessionId, { reason: "publish only wired for local-checkout targets so far" });
-    return;
-  }
-  const result = output[Object.keys(output)[0] ?? ""] as AgentResult | undefined;
-  if (!result) {
-    emit(convId, "publish_failed", sessionId, { reason: "no agent result" });
-    return;
-  }
-  const log = new SessionLog(outDir, sessionId);
-  try {
-    const outcome = await ghPublish({ repoPath: conv.target.repoPath, branch: conv.target.branch, result }, log);
-    emit(convId, outcome.prUrl ? "published" : "publish_failed", sessionId, { ...outcome });
-  } catch (err) {
-    log.emit("orchestrator", "error", `publish failed: ${String(err)}`);
-    emit(convId, "publish_failed", sessionId, { error: String(err) });
-  } finally {
-    writeTimeline(outDir); // fold publish log lines into the chronological view
-  }
-}
-
 export function startSession(convId: string, input: StartSessionInput): { sessionId: string } {
   const conv = getConversation(convId);
   if (!conv) throw new Error(`unknown conversation ${convId}`);
@@ -119,14 +94,40 @@ export function startSession(convId: string, input: StartSessionInput): { sessio
   saveConversation(conv);
   emit(convId, "session_started", sessionId, { backend: settings.backend, provider: settings.provider });
 
-  // Fire-and-track: don't block the request on a multi-minute session. The
-  // runner writes session.json + logs into outDir as it goes; we record the
-  // terminal Event when it resolves. (Degrade-don't-die: a failure becomes an
-  // event, never a crash — §2.6.)
-  void runSession({ sessionId, settings, prompt, outDir })
-    .then(async (res) => {
+  // Publish runs as the runner's afterWork hook — with the LIVE backend, before
+  // dispose — so the push comes from where the commits actually are (host for
+  // local/container, the sandbox for daytona). We capture the outcome and emit
+  // the conversation Event after session_finished (clean ordering). The publish
+  // log lines land in the session log and get folded into timeline.log by the
+  // runner's own finally (which runs after this hook).
+  let outcome: PublishOutcome | undefined;
+  let publishError: string | undefined;
+  const afterWork: AfterWork | undefined = input.publish
+    ? async (ctx) => {
+        if (conv.target.kind !== "local") {
+          publishError = "publish is only wired for local-checkout targets so far";
+          return;
+        }
+        const result = ctx.output[ctx.settings.agent] as AgentResult | undefined;
+        if (!result) {
+          publishError = "no agent result to publish";
+          return;
+        }
+        try {
+          outcome = await ghPublish({ backend: ctx.backend, workdir: ctx.workdir, branch: conv.target.branch, result }, ctx.log);
+        } catch (err) {
+          ctx.log.emit("orchestrator", "error", `publish failed: ${String(err)}`);
+          publishError = String(err);
+        }
+      }
+    : undefined;
+
+  void runSession({ sessionId, settings, prompt, outDir, ...(afterWork ? { afterWork } : {}) })
+    .then((res) => {
       emit(convId, "session_finished", sessionId, { output: res.output });
-      if (input.publish) await runPublish(convId, conv, sessionId, res.outDir, res.output);
+      if (!input.publish) return;
+      if (outcome?.prUrl) emit(convId, "published", sessionId, { ...outcome });
+      else emit(convId, "publish_failed", sessionId, outcome ? { ...outcome } : { error: publishError ?? "unknown" });
     })
     .catch((err) => emit(convId, "session_failed", sessionId, { error: String(err) }));
 

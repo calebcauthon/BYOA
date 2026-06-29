@@ -24,7 +24,7 @@ import type { AgentResult, Blackboard, Usage } from "@automations/core";
 import { registerProvider, type Provider, type ProviderRunInput } from "./index.ts";
 import type { Backend, ExecOpts } from "../backends/index.ts";
 import type { SessionLog } from "../logging.ts";
-import { publishProtocol, readPublish } from "../publish.ts";
+import { readPublish } from "../publish.ts";
 
 const CLAUDE_TIMEOUT_MS = Number(process.env.RUNNER_CLAUDE_TIMEOUT_MS ?? 30 * 60 * 1000);
 const HEARTBEAT_MS = 30 * 1000;
@@ -86,7 +86,7 @@ class ClaudeProvider implements Provider {
     const cmd = [
       "claude",
       "-p",
-      `${prompt}${publishProtocol(scratchDir)}`,
+      prompt, // already includes the publish protocol (appended in runSession)
       "--output-format",
       "stream-json",
       "--verbose",
