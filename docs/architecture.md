@@ -357,11 +357,13 @@ posted, decided for v2:
 - **The agent authors what to publish, as part of its own structured output.**
   Producing a comment is part of the agent's *instructions*, not a separate
   orchestrator step. The agent emits a `publish` list in its blackboard JSON
-  (`outputs/<agent>.json`), e.g.
-  `publish: [{ kind: "comment", target: "pr"|"issue", body }, { kind: "image", path, caption }, …]`.
-  It's **structured JSON written to a known file**, captured by the runner via
-  `backend.readDir` (works on local/container/daytona) — not free-form text the
-  orchestrator has to parse out.
+  (`outputs/<agent>.json`), e.g. `publish: [{ kind: "pr-description", title?, body },
+  { kind: "comment", target: "pr"|"issue", body }, { kind: "image", path, caption }, …]`.
+  The orchestrator pushes + **auto-creates the PR using the agent-authored
+  `pr-description` body** (the LLM supplies the description); `comment` items are
+  posted as remarks. It's **structured JSON written to a known file**, captured by
+  the runner via `backend.readDir` (works on local/container/daytona) — not
+  free-form text the orchestrator has to parse out.
 - **The orchestrator is the sole publisher.** It pushes the code, opens/advances
   the PR, then posts the agent-authored comments/images. The actual REST/`git`
   calls are deterministic and host-side; the agent never touches the remote (§4.1).

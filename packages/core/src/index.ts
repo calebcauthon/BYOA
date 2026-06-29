@@ -140,6 +140,10 @@ export interface Usage {
  * beyond coding — a QA run can publish a comment + images and no code at all.
  */
 export type Publication =
+  /** the PR description (body) the orchestrator uses when it auto-creates/updates
+   *  the pull request; optional title overrides the default */
+  | { kind: "pr-description"; title?: string; body: string }
+  /** a comment posted on the PR or the originating issue */
   | { kind: "comment"; target: "pr" | "issue"; body: string }
   | { kind: "image"; path: string; caption?: string };
 

@@ -26,21 +26,25 @@ export function publishProtocol(scratchDir: string): string {
   return [
     "\n\n---",
     "## Publishing (optional)",
-    `If you have outward content to publish — a PR/issue comment, screenshots — write it as JSON to exactly this path: ${publishPath(scratchDir)}`,
+    `If you have outward content to publish — a pull-request description, a PR/issue comment, screenshots — write it as JSON to exactly this path: ${publishPath(scratchDir)}`,
     "Schema:",
     '```json',
     '{ "publish": [',
+    '  { "kind": "pr-description", "title": "<optional PR title>", "body": "<github-flavored markdown describing the change>" },',
     '  { "kind": "comment", "target": "pr", "body": "<github-flavored markdown>" },',
     '  { "kind": "image", "path": "<absolute path in this environment>", "caption": "<optional>" }',
     '] }',
     '```',
-    "Write the file only if you have something to publish; otherwise skip it. Do not push or touch the remote — the orchestrator publishes.",
+    "Use `pr-description` for the PR body the orchestrator will open the pull request with; use `comment` for a remark on the PR/issue. Write the file only if you have something to publish; otherwise skip it. Do not push or touch the remote — the orchestrator publishes.",
   ].join("\n");
 }
 
 function isPublication(v: unknown): v is Publication {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
+  if (o["kind"] === "pr-description") {
+    return typeof o["body"] === "string" && (o["title"] === undefined || typeof o["title"] === "string");
+  }
   if (o["kind"] === "comment") return (o["target"] === "pr" || o["target"] === "issue") && typeof o["body"] === "string";
   if (o["kind"] === "image") return typeof o["path"] === "string";
   return false;
