@@ -349,6 +349,36 @@ is a pragmatic starting boundary, not a permanent law — design placement as
 capabilities that *could* be handed to a high-level agent later, while keeping
 the GitHub/remote liaison firmly on the orchestrator.
 
+### 4.4 Publishing: the agent AUTHORS, the orchestrator PUBLISHES
+
+How outward content (PR/issue comments, screenshots, status) gets produced and
+posted, decided for v2:
+
+- **The agent authors what to publish, as part of its own structured output.**
+  Producing a comment is part of the agent's *instructions*, not a separate
+  orchestrator step. The agent emits a `publish` list in its blackboard JSON
+  (`outputs/<agent>.json`), e.g.
+  `publish: [{ kind: "comment", target: "pr"|"issue", body }, { kind: "image", path, caption }, …]`.
+  It's **structured JSON written to a known file**, captured by the runner via
+  `backend.readDir` (works on local/container/daytona) — not free-form text the
+  orchestrator has to parse out.
+- **The orchestrator is the sole publisher.** It pushes the code, opens/advances
+  the PR, then posts the agent-authored comments/images. The actual REST/`git`
+  calls are deterministic and host-side; the agent never touches the remote (§4.1).
+- **Ordering:** push first (so the diff is on GitHub), *then* comment — a comment
+  refers to code that's now there. The orchestrator can template in the PR URL at
+  post time, since the agent authored the body before the PR existed.
+- **This replaces v1's model.** v1 generated comments with a separate
+  orchestrator-side LLM call (`summarize_change` over the diff), bolted on
+  per-persona and assuming a code change. v2 moves the LLM work *into the agent*
+  (it already has the full context of what it did — one fewer call, more
+  accurate) and leaves the orchestrator's publish step **deterministic**.
+- **Why it generalizes:** the unit isn't "summarize a diff," it's "the agent
+  produced things to publish." A QA run can output screenshots + a comment and
+  **no code at all**; a planner can output an issue comment and nothing else. The
+  `publish` field is a standard part of `AgentResult` (§3.1), present for every
+  agent, defaulting to empty.
+
 ---
 
 ## Appendix — One-line acceptance checklist
@@ -359,6 +389,7 @@ the GitHub/remote liaison firmly on the orchestrator.
 - [ ] Continue + Fork as first-class buttons; image paste in composer; screenshot lightbox.
 - [ ] Orchestrator owns + renders the Conversation; owns run-state trust boundary; agents can't forge state.
 - [ ] Orchestrator is the **GitHub liaison** for all outward actions — comments, PR open/advance, **and `git push`**; the agent never touches the remote directly.
+- [ ] **Agent authors, orchestrator publishes** (§4.4): agents emit a `publish` list (comments/images) as structured JSON in their output; the orchestrator posts it deterministically (push → PR → comment). No separate comment-writing LLM call.
 - [ ] Orchestrator owns branch/worktree/placement *for now*, designed to be handable to a high-level agent later.
 - [ ] One Conversation-owned log directory: every source dumped there, datestamped + source-tagged, separated on disk, unified in the UI, rendered only by the orchestrator.
 - [ ] Backend (cloud/local/host) is one adapter; identical loop everywhere.
