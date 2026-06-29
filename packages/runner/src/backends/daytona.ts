@@ -169,6 +169,11 @@ class DaytonaBackend implements Backend {
       const url = `https://github.com/${settings.target.repo}.git`;
       log.emit("backend", "info", `cloning ${url} (branch ${settings.target.branch}) → ${WORKDIR}`);
       await this.sandbox.git.clone(url, WORKDIR, settings.target.branch);
+      // Optionally branch off the cloned base so the agent works on a fresh branch.
+      if (settings.target.newBranch) {
+        log.emit("backend", "info", `creating branch ${settings.target.newBranch} off ${settings.target.branch}`);
+        await this.must(`cd ${WORKDIR} && git checkout -b ${settings.target.newBranch}`, log);
+      }
     }
 
     // git identity so the agent can commit (host owns the push); trust the tree.

@@ -165,6 +165,24 @@ button:focus-visible, textarea:focus-visible, a:focus-visible {
 .config-block-head { margin-bottom: 14px; }
 .config-block-head h3 { margin: 0 0 3px; font-size: 11px; letter-spacing: -.01em; }
 .config-block-head p { margin: 0; color: var(--text-3); font-size: 9px; }
+.target-kind-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; margin-bottom: 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in oklch, var(--surface), transparent 30%); }
+.target-kind-switch button { display: flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 5px; padding: 7px 0; background: transparent; color: var(--text-3); font-size: 9px; font-weight: 600; cursor: pointer; }
+.target-kind-switch button:hover { color: var(--text-2); }
+.target-kind-switch button.active { background: var(--accent-soft); color: var(--accent); }
+.config-note { margin: 11px 0 0; color: var(--text-3); font-size: 8px; }
+.github-error { color: oklch(0.79 0.08 27); }
+.github-target { display: grid; gap: 9px; }
+.github-add-org { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: stretch; }
+.github-repo-row { display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 6px; }
+.github-meta-fields { margin-top: 9px; }
+.org-save { display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--accent-soft); color: var(--accent); font-size: 9px; font-weight: 600; padding: 0 11px; cursor: pointer; white-space: nowrap; }
+.org-save:hover { border-color: oklch(0.4 0.075 153); }
+.org-save:disabled { background: var(--surface); color: var(--text-3); cursor: default; }
+.org-icon-button { display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-3); cursor: pointer; }
+.org-icon-button:hover { background: var(--surface-raised); color: var(--text-2); }
+.org-icon-button:disabled { color: var(--border); cursor: default; }
+.org-icon-button .spin { animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .config-panel .field-grid { grid-template-columns: 1fr; margin-left: 0; gap: 9px; }
 .config-panel .target-fields, .config-panel .runtime-fields { grid-template-columns: 1fr; }
 .config-panel .field-with-action { grid-template-columns: 1fr; }
@@ -213,14 +231,18 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
 
 .transcript { min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; scrollbar-color: var(--border) transparent; scrollbar-width: thin; scroll-padding-top: 32px; }
 .thread { width: min(760px, calc(100% - 64px)); margin: 0 auto; padding: 30px 0 96px; }
-.session-card { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); padding: 17px 18px 14px; scroll-margin-top: 24px; }
+.session-card { position: relative; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); padding: 17px 18px 14px; scroll-margin-top: 24px; }
+.session-copy { position: absolute; top: 12px; right: 12px; display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--border-soft); border-radius: 6px; background: color-mix(in oklch, var(--surface), transparent 30%); color: var(--text-3); cursor: pointer; opacity: 0; transition: opacity .12s ease, color .12s ease, border-color .12s ease; }
+.session-card:hover .session-copy { opacity: 1; }
+.session-copy:hover { color: var(--text); border-color: var(--border); background: var(--surface-raised); }
+.session-copy:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
 .session-heading { display: flex; align-items: center; gap: 11px; }
 .session-number { font: 10px var(--mono); color: var(--accent); width: 25px; height: 25px; display: grid; place-items: center; background: var(--accent-soft); border-radius: 6px; }
 .session-heading > div:nth-child(2) { display: grid; gap: 2px; }
 .session-heading strong { font-size: 11px; }
 .session-heading span:not(.session-number) { font-size: 9px; color: var(--text-3); }
 .session-runtime { display: flex !important; align-items: center; gap: 5px !important; color: var(--text-2); font: 9px var(--mono); }
-.session-prompt { flex: 1; margin: 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+.session-prompt { flex: 1; margin: 0; padding-right: 30px; font-size: 13px; line-height: 1.5; color: var(--text); }
 .session-card > p { font-size: 12px; line-height: 1.65; color: var(--text-2); margin: 15px 0 12px; max-width: 68ch; }
 .session-card > p.prompt-more { margin-top: -6px; color: var(--text-3); }
 .session-footer { display: flex; align-items: center; gap: 14px; padding-top: 10px; border-top: 1px solid var(--border-soft); color: var(--text-3); font: 9px var(--mono); }

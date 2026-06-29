@@ -8,6 +8,7 @@ import {
   ChevronRight,
   CircleStop,
   Cloud,
+  Copy,
   FileCode2,
   FolderGit2,
   GitBranch,
@@ -18,6 +19,7 @@ import {
   PanelLeftClose,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Terminal,
   Wrench,
@@ -28,7 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 type RunState = "running" | "ready" | "failed" | "queued" | "stopped";
 type BackendKind = "local" | "container" | "daytona";
 type ProviderKind = "pi" | "claude-subscription" | "codex";
-type Target = { kind: "local"; repoPath: string; branch: string } | { kind: "remote"; repo: string; issue?: number; branch: string };
+type Target = { kind: "local"; repoPath: string; branch: string } | { kind: "remote"; repo: string; issue?: number; branch: string; newBranch?: string };
 
 interface AgentSessionSettings {
   backend: string;
@@ -104,7 +106,11 @@ interface OptionsPayload {
 
 interface LaunchForm {
   title: string;
+  targetKind: "local" | "remote";
   repoPath: string;
+  org: string;
+  repo: string;
+  issue: string;
   branch: string;
   newBranch: boolean;
   branchName: string;
@@ -308,19 +314,21 @@ function FieldInput({
   icon,
   onChange,
   placeholder,
+  list,
 }: {
   label: string;
   value: string;
   icon: ReactNode;
   onChange: (value: string) => void;
   placeholder?: string;
+  list?: string;
 }) {
   return (
     <label className="field-button field-input">
       <span className="field-icon">{icon}</span>
       <span>
         <small>{label}</small>
-        <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+        <input value={value} placeholder={placeholder} list={list} onChange={(event) => onChange(event.target.value)} />
       </span>
     </label>
   );
@@ -332,12 +340,14 @@ function FieldSelect<T extends string>({
   icon,
   options,
   onChange,
+  render,
 }: {
   label: string;
   value: T;
   icon: ReactNode;
   options: T[];
   onChange: (value: T) => void;
+  render?: (value: T) => string;
 }) {
   return (
     <label className="field-button field-input">
@@ -345,7 +355,7 @@ function FieldSelect<T extends string>({
       <span>
         <small>{label}</small>
         <select value={value} onChange={(event) => onChange(event.target.value as T)}>
-          {options.map((option) => <option value={option} key={option}>{option}</option>)}
+          {options.map((option) => <option value={option} key={option}>{render ? render(option) : option}</option>)}
         </select>
       </span>
       <ChevronDown size={13} />
@@ -573,6 +583,145 @@ function EmptyIssues() {
   );
 }
 
+interface GithubOrgsPayload {
+  orgs: string[];
+  lastOrg: string | null;
+}
+interface GithubReposPayload {
+  org: string;
+  repos: string[];
+  fetchedAt: string;
+  cached?: boolean;
+  stale?: boolean;
+  error?: string;
+}
+
+const ADD_ORG = " add-org";
+
+// Organization + repository picker for GitHub targets. Defaults the org to the
+// last-used (or the only saved one) so it rarely needs typing, and reads the
+// host-cached repo list so the dropdown is populated without waiting on the network.
+function GithubTargetPicker({
+  org,
+  repo,
+  onChange,
+}: {
+  org: string;
+  repo: string;
+  onChange: (next: Partial<LaunchForm>) => void;
+}) {
+  const [orgs, setOrgs] = useState<string[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [newOrg, setNewOrg] = useState("");
+  const [savingOrg, setSavingOrg] = useState(false);
+  const [repos, setRepos] = useState<string[]>([]);
+  const [loadingRepos, setLoadingRepos] = useState(false);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api<GithubOrgsPayload>("/api/github/orgs")
+      .then((payload) => {
+        if (!active) return;
+        setOrgs(payload.orgs);
+        if (payload.orgs.length === 0) setAdding(true);
+        if (!org) {
+          const fallback = payload.lastOrg ?? (payload.orgs.length === 1 ? payload.orgs[0] : "");
+          if (fallback) onChange({ org: fallback, repo: "" });
+        }
+      })
+      .catch((err) => active && setError(String(err)));
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadRepos = useCallback((targetOrg: string, refresh = false) => {
+    if (!targetOrg) { setRepos([]); setFetchedAt(null); return; }
+    setLoadingRepos(true);
+    setError(null);
+    api<GithubReposPayload>(`/api/github/repos?org=${encodeURIComponent(targetOrg)}${refresh ? "&refresh=1" : ""}`)
+      .then((payload) => {
+        setRepos(payload.repos);
+        setFetchedAt(payload.fetchedAt);
+        setError(payload.error ?? null);
+      })
+      .catch((err) => { setRepos([]); setError(String(err)); })
+      .finally(() => setLoadingRepos(false));
+  }, []);
+
+  useEffect(() => { loadRepos(org); }, [org, loadRepos]);
+
+  const saveOrg = async () => {
+    const value = newOrg.trim();
+    if (!value) return;
+    setSavingOrg(true);
+    setError(null);
+    try {
+      const payload = await api<GithubOrgsPayload>("/api/github/orgs", { method: "POST", body: JSON.stringify({ org: value }) });
+      setOrgs(payload.orgs);
+      setAdding(false);
+      setNewOrg("");
+      onChange({ org: value, repo: "" });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSavingOrg(false);
+    }
+  };
+
+  const shortName = (full: string) => (org && full.startsWith(`${org}/`) ? full.slice(org.length + 1) : full);
+  const repoName = shortName(repo);
+  const setRepoName = (value: string) => {
+    const trimmed = value.trim();
+    onChange({ repo: !trimmed ? "" : trimmed.includes("/") || !org ? trimmed : `${org}/${trimmed}` });
+  };
+
+  return (
+    <div className="github-target">
+      {adding ? (
+        <div className="github-add-org">
+          <FieldInput label="New organization" value={newOrg} onChange={setNewOrg} icon={<Github size={14} />} placeholder="my-org" />
+          <button className="org-save" disabled={!newOrg.trim() || savingOrg} onClick={() => void saveOrg()}>{savingOrg ? "Saving…" : "Save org"}</button>
+          {orgs.length > 0 && <button className="org-icon-button" aria-label="Cancel" onClick={() => { setAdding(false); setNewOrg(""); }}><X size={13} /></button>}
+        </div>
+      ) : (
+        <FieldSelect
+          label="Organization"
+          value={org || ADD_ORG}
+          options={[...orgs, ADD_ORG]}
+          onChange={(value) => (value === ADD_ORG ? setAdding(true) : onChange({ org: value, repo: "" }))}
+          icon={<Github size={14} />}
+          render={(value) => (value === ADD_ORG ? "+ Add organization…" : value)}
+        />
+      )}
+      <div className="github-repo-row">
+        <FieldInput
+          label={loadingRepos ? "Repository · loading…" : "Repository"}
+          value={repoName}
+          onChange={setRepoName}
+          icon={<FolderGit2 size={14} />}
+          placeholder={org ? "repository" : "owner/name"}
+          list="github-repos"
+        />
+        <datalist id="github-repos">
+          {repos.map((r) => <option value={shortName(r)} key={r} />)}
+        </datalist>
+        <button className="org-icon-button" aria-label="Refresh repositories" title="Refresh repository list" disabled={!org || loadingRepos} onClick={() => loadRepos(org, true)}>
+          <RefreshCw size={13} className={loadingRepos ? "spin" : ""} />
+        </button>
+      </div>
+      {error ? (
+        <p className="config-note github-error">{error}</p>
+      ) : fetchedAt ? (
+        <p className="config-note">{repos.length} repos · daytona backend clones the target</p>
+      ) : (
+        <p className="config-note">GitHub targets clone in the daytona backend.</p>
+      )}
+    </div>
+  );
+}
+
 function NewRunView({
   options,
   onLaunch,
@@ -584,7 +733,11 @@ function NewRunView({
 }) {
   const [form, setForm] = useState<LaunchForm>(() => ({
     title: "New agent run",
+    targetKind: "local",
     repoPath: "",
+    org: "",
+    repo: "",
+    issue: "",
     branch: "main",
     newBranch: true,
     branchName: "auto/m4-console-run",
@@ -604,15 +757,21 @@ function NewRunView({
   const [branchOpen, setBranchOpen] = useState(false);
 
   const providerModels = options.providers.find((p) => p.id === form.provider)?.models ?? [form.model];
+  const isRemote = form.targetKind === "remote";
   const branchTarget = form.newBranch ? form.branchName : form.branch;
+  // Remote (GitHub) checkouts are only materialized by the daytona backend.
+  const backendOptions = isRemote ? options.backends.filter((b) => b === "daytona") : options.backends;
 
   const patch = (next: Partial<LaunchForm>) => setForm((current) => ({ ...current, ...next }));
+
+  const chooseTargetKind = (kind: "local" | "remote") =>
+    patch(kind === "remote" ? { targetKind: "remote", backend: "daytona" } : { targetKind: "local" });
 
   const submit = async () => {
     setLaunching(true);
     setError(null);
     try {
-      await onLaunch({ ...form, branchName: branchTarget });
+      await onLaunch(form);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -675,11 +834,11 @@ function NewRunView({
 
           <div className="launch-footer">
             <div className="launch-summary">
-              <span><FolderGit2 size={13} /> {form.repoPath ? targetLabel({ kind: "local", repoPath: form.repoPath, branch: branchTarget }) : "local checkout"}</span>
+              <span>{isRemote ? <Github size={13} /> : <FolderGit2 size={13} />} {isRemote ? (form.repo ? targetLabel({ kind: "remote", repo: form.repo, branch: branchTarget, ...(form.issue.trim() ? { issue: Number(form.issue) } : {}) }) : "owner/name") : (form.repoPath ? targetLabel({ kind: "local", repoPath: form.repoPath, branch: branchTarget }) : "local checkout")}</span>
               <span><Bot size={13} /> {providerLabel(form.provider)} · {form.model}</span>
               <span><Cloud size={13} /> {backendLabel(form.backend)}</span>
             </div>
-            <button className="launch-button" disabled={!form.prompt.trim() || !form.repoPath.trim() || launching} onClick={submit}>
+            <button className="launch-button" disabled={!form.prompt.trim() || (isRemote ? !form.repo.trim() : !form.repoPath.trim()) || launching} onClick={submit}>
               {launching ? "Launching…" : "Launch run"} <span>⌘↵</span><ArrowUpRight size={14} />
             </button>
           </div>
@@ -688,28 +847,54 @@ function NewRunView({
         <aside className="config-panel">
           <section className="config-block">
             <div className="config-block-head"><h3>Target</h3><p>Where the work should land.</p></div>
-            <div className="field-grid target-fields">
-              <div className="field-with-action">
-                <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
-                <div className="browse-split">
-                  <button className="browse-button" disabled={nativeBrowsing} onClick={() => void chooseNativeFolder()}><FolderGit2 size={13} /> {nativeBrowsing ? "Choosing…" : "Browse"}</button>
-                  <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
-                </div>
-              </div>
-              <div className="field-with-action branch-field-with-action">
-                <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
-                <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
-              </div>
+            <div className="target-kind-switch" role="tablist" aria-label="Target kind">
+              <button role="tab" aria-selected={!isRemote} className={!isRemote ? "active" : ""} onClick={() => chooseTargetKind("local")}><FolderGit2 size={13} /> Local</button>
+              <button role="tab" aria-selected={isRemote} className={isRemote ? "active" : ""} onClick={() => chooseTargetKind("remote")}><Github size={13} /> GitHub</button>
             </div>
-            <label className="branch-toggle">
-              <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
-              <span className="toggle-track"><i /></span>
-              <span><strong>Create a new branch</strong><small>{branchTarget}</small></span>
-            </label>
-            {form.newBranch && (
-              <div className="field-grid single-field">
-                <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
-              </div>
+            {isRemote ? (
+              <>
+                <GithubTargetPicker org={form.org} repo={form.repo} onChange={patch} />
+                <div className="field-grid github-meta-fields">
+                  <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} placeholder="main" />
+                  <FieldInput label="Issue (optional)" value={form.issue} onChange={(issue) => patch({ issue })} icon={<Link2 size={14} />} placeholder="123" />
+                </div>
+                <label className="branch-toggle">
+                  <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
+                  <span className="toggle-track"><i /></span>
+                  <span><strong>Create a new branch</strong><small>{form.newBranch ? form.branchName : `work on ${form.branch}`}</small></span>
+                </label>
+                {form.newBranch && (
+                  <div className="field-grid single-field">
+                    <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="field-grid target-fields">
+                  <div className="field-with-action">
+                    <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
+                    <div className="browse-split">
+                      <button className="browse-button" disabled={nativeBrowsing} onClick={() => void chooseNativeFolder()}><FolderGit2 size={13} /> {nativeBrowsing ? "Choosing…" : "Browse"}</button>
+                      <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
+                    </div>
+                  </div>
+                  <div className="field-with-action branch-field-with-action">
+                    <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
+                    <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
+                  </div>
+                </div>
+                <label className="branch-toggle">
+                  <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
+                  <span className="toggle-track"><i /></span>
+                  <span><strong>Create a new branch</strong><small>{branchTarget}</small></span>
+                </label>
+                {form.newBranch && (
+                  <div className="field-grid single-field">
+                    <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
+                  </div>
+                )}
+              </>
             )}
           </section>
 
@@ -718,7 +903,7 @@ function NewRunView({
             <div className="field-grid runtime-fields">
               <FieldSelect label="Provider" value={form.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => patch({ provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? form.model })} icon={<Bot size={14} />} />
               <FieldSelect label="Model" value={form.model} options={providerModels} onChange={(model) => patch({ model })} icon={<Bot size={14} />} />
-              <FieldSelect label="Backend" value={form.backend} options={options.backends} onChange={(backend) => patch({ backend })} icon={<Cloud size={14} />} />
+              <FieldSelect label="Backend" value={form.backend} options={backendOptions} onChange={(backend) => patch({ backend })} icon={<Cloud size={14} />} />
               <FieldInput label="Agent" value={form.agent} onChange={(agent) => patch({ agent })} icon={<Bot size={14} />} />
             </div>
             <div className="skill-row">
@@ -759,11 +944,57 @@ function NewRunView({
   );
 }
 
-function SessionCard({ session, index }: { session: AgentSession; index: number }) {
+function sessionMarkdown(session: AgentSession, index: number, entries: TimelineEntry[]): string {
+  const promptText = session.prompt?.task || session.prompt?.assembled || "(prompt not persisted)";
+  const target = session.settings.target;
+  const lines: string[] = [
+    `## Agent session ${String(index + 1).padStart(2, "0")}`,
+    "",
+    `**Prompt:** ${promptText}`,
+    "",
+    "**Settings**",
+    `- Provider: ${providerLabel(session.settings.provider)}`,
+    `- Model: ${session.settings.model}`,
+    `- Backend: ${backendLabel(session.settings.backend)}`,
+    `- Agent: ${session.settings.agent}`,
+    `- Target: ${targetLabel(target)} (${target.kind})`,
+    `- Branch: ${targetBranch(target)}${target.kind === "remote" && target.newBranch ? ` → ${target.newBranch}` : ""}`,
+    `- Status: ${session.status}`,
+    `- Session ID: \`${session.id}\``,
+  ];
+  if (session.startedAt) lines.push(`- Started: ${session.startedAt}`);
+  if (session.finishedAt) lines.push(`- Finished: ${session.finishedAt}`);
+  if (session.error) lines.push("", `**Error:** ${session.error}`);
+  if (entries.length) {
+    lines.push("", `### Orchestration timeline (${entries.length} entries)`, "", "| Δt | source | level | message |", "| --- | --- | --- | --- |");
+    for (const e of entries) {
+      lines.push(`| ${e.rel} | ${e.source} | ${e.level} | ${e.message.replace(/\|/g, "\\|").replace(/\n/g, " ")} |`);
+    }
+    lines.push("", "<details><summary>Raw entries (JSON)</summary>", "", "```json", JSON.stringify(entries, null, 2), "```", "", "</details>");
+  }
+  return lines.join("\n") + "\n";
+}
+
+function SessionCard({ session, index, entries }: { session: AgentSession; index: number; entries: TimelineEntry[] }) {
   const [showMore, setShowMore] = useState(index === 0);
+  const [copied, setCopied] = useState(false);
   const promptText = session.prompt?.task || session.prompt?.assembled || "Session accepted; waiting for the runner to persist the prompt.";
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(sessionMarkdown(session, index, entries));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // clipboard unavailable (insecure context); leave state unchanged
+    }
+  };
+
   return (
     <div className="session-card" id={session.id}>
+      <button className="session-copy" onClick={() => void copy()} title="Copy session + orchestration as markdown" aria-label="Copy session as markdown">
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+      </button>
       <div className="session-heading">
         <span className="session-number">{String(index + 1).padStart(2, "0")}</span>
         <p className="session-prompt">{showMore ? promptText : `${promptText.slice(0, 180)}${promptText.length > 180 ? "…" : ""}`}</p>
@@ -1067,7 +1298,7 @@ function ConversationView({
         <article className="thread">
           {rendered.sessions.length ? rendered.sessions.map((session, index) => (
             <div className="session-block" key={session.id}>
-              <SessionCard session={session} index={index} />
+              <SessionCard session={session} index={index} entries={entriesBySession.get(session.id) ?? []} />
               <TimelineForSession entries={entriesBySession.get(session.id) ?? []} prompt={session.prompt?.task || session.prompt?.assembled || ""} label={providerLabel(session.settings.provider)} />
             </div>
           )) : (
@@ -1183,7 +1414,11 @@ function App() {
     const target = rendered.conversation.target;
     setDraft({
       title: rendered.conversation.title,
+      targetKind: target.kind,
       repoPath: target.kind === "local" ? target.repoPath : "",
+      org: target.kind === "remote" ? target.repo.split("/")[0] ?? "" : "",
+      repo: target.kind === "remote" ? target.repo : "",
+      issue: target.kind === "remote" && target.issue ? String(target.issue) : "",
       branch: target.branch,
       newBranch: false,
       provider: (latest?.settings.provider as ProviderKind) ?? "pi",
@@ -1199,8 +1434,17 @@ function App() {
   };
 
   const launch = async (form: LaunchForm) => {
-    const branch = form.newBranch ? form.branchName : form.branch;
-    const target: Target = { kind: "local", repoPath: form.repoPath, branch };
+    const newBranchName = form.newBranch ? form.branchName.trim() : "";
+    const issue = form.issue.trim();
+    const target: Target = form.targetKind === "remote"
+      ? {
+          kind: "remote",
+          repo: form.repo.trim(),
+          branch: form.branch,
+          ...(newBranchName ? { newBranch: newBranchName } : {}),
+          ...(/^\d+$/.test(issue) ? { issue: Number(issue) } : {}),
+        }
+      : { kind: "local", repoPath: form.repoPath, branch: newBranchName || form.branch };
     const conv = await api<Conversation>("/api/conversations", {
       method: "POST",
       body: JSON.stringify({ title: form.title || form.prompt.split("\n")[0] || "Agent run", target }),

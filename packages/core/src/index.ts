@@ -22,7 +22,9 @@ export type AgentSessionId = string;
 // one primitive.
 
 export type Target =
-  | { kind: "remote"; repo: string; issue?: number; branch: string }
+  // `branch` is the base to clone; `newBranch`, when set, is created from it after
+  // clone so the agent works on a fresh branch (mirrors the local "new branch").
+  | { kind: "remote"; repo: string; issue?: number; branch: string; newBranch?: string }
   | { kind: "local"; repoPath: string; branch: string };
 
 // ───────────────────────────── Agent Session settings ─────────────────────────────

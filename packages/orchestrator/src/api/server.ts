@@ -26,9 +26,14 @@ import { buildTimeline } from "../logs/timeline.ts";
 import {
   getConversation,
   listBranchRecents,
+  listGithubOrgs,
   listLocalRecents,
+  readReposCache,
   rememberBranchRecent,
+  rememberGithubOrg,
   rememberLocalRecent,
+  setLastGithubOrg,
+  writeReposCache,
 } from "../state/store.ts";
 import type { Target } from "@automations/core";
 
@@ -171,6 +176,17 @@ async function git(repoPath: string, args: string[]): Promise<string> {
   return stdout;
 }
 
+// owner/name for every repo the gh-authed user can see under `org` (an org or a
+// user login). Cached by the caller so the console never waits on this twice.
+async function fetchOrgRepos(org: string): Promise<string[]> {
+  const { stdout } = await execFileAsync(
+    "gh",
+    ["repo", "list", org, "--limit", "500", "--json", "nameWithOwner", "--jq", ".[].nameWithOwner"],
+    { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
+  );
+  return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
 function cleanBranch(raw: string): string | null {
   const branch = raw.trim().replace(/^remotes\//, "");
   if (!branch || branch.includes("HEAD ->")) return null;
@@ -291,6 +307,35 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       if (!repoPath || !safeStat(repoPath)?.isGit) return send(res, 400, { error: "repoPath must be a git repository" });
       if (!branch) return send(res, 400, { error: "branch is required" });
       return send(res, 200, { recents: rememberBranchRecent(repoPath, branch) });
+    }
+  }
+
+  // /api/github/orgs — saved organizations + last-used, so the operator never
+  // re-types an org. /api/github/repos — cached owner/name list for an org; reads
+  // the host cache instantly, only shelling out to `gh` on a miss or ?refresh=1.
+  if (parts[0] === "github" && parts[1] === "orgs" && parts.length === 2) {
+    if (method === "GET") return send(res, 200, listGithubOrgs());
+    if (method === "POST") {
+      const body = await readBody(req);
+      const org = typeof body.org === "string" ? body.org.trim() : "";
+      if (!org) return send(res, 400, { error: "org is required" });
+      return send(res, 200, rememberGithubOrg(org));
+    }
+  }
+  if (parts[0] === "github" && parts[1] === "repos" && parts.length === 2 && method === "GET") {
+    const org = (url.searchParams.get("org") ?? "").trim();
+    if (!org) return send(res, 400, { error: "org is required" });
+    setLastGithubOrg(org);
+    const cached = readReposCache(org);
+    const refresh = url.searchParams.get("refresh") === "1";
+    if (cached && !refresh) return send(res, 200, { org, repos: cached.repos, fetchedAt: cached.fetchedAt, cached: true });
+    try {
+      const repos = await fetchOrgRepos(org);
+      writeReposCache(org, repos);
+      return send(res, 200, { org, repos, fetchedAt: new Date().toISOString(), cached: false });
+    } catch (err) {
+      if (cached) return send(res, 200, { org, repos: cached.repos, fetchedAt: cached.fetchedAt, cached: true, stale: true, error: String(err) });
+      return send(res, 400, { error: `gh repo list failed: ${String(err)}` });
     }
   }
 

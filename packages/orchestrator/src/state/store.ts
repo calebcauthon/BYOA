@@ -24,6 +24,7 @@ export const STATE_DIR = process.env.AUTOMATIONS_STATE_DIR ?? join(process.cwd()
 const CONV_DIR = join(STATE_DIR, "conversations");
 const LOCAL_RECENTS_FILE = join(STATE_DIR, "local-recents.json");
 const BRANCH_RECENTS_FILE = join(STATE_DIR, "branch-recents.json");
+const GITHUB_FILE = join(STATE_DIR, "github.json");
 
 export function conversationDir(id: string): string {
   return join(CONV_DIR, id);
@@ -159,4 +160,69 @@ export function rememberBranchRecent(repoPath: string, branch: string): BranchRe
   ].slice(0, 100);
   atomicWrite(BRANCH_RECENTS_FILE, JSON.stringify(next, null, 2));
   return listBranchRecents(normalized);
+}
+
+// ───────────────────────────── github orgs + repo cache ─────────────────────────────
+//
+// So the operator never re-types an organization, and the repo list for an org is
+// cached on the host — page loads read the cache instantly; a manual refresh (or
+// a cache miss) hits `gh repo list`.
+
+interface ReposCacheEntry {
+  fetchedAt: string;
+  repos: string[];
+}
+interface GithubState {
+  orgs: string[];
+  lastOrg: string | null;
+  repos: Record<string, ReposCacheEntry>;
+}
+
+function readGithubState(): GithubState {
+  const raw = readJSON<Partial<GithubState>>(GITHUB_FILE);
+  return {
+    orgs: Array.isArray(raw?.orgs) ? raw!.orgs.filter((o): o is string => typeof o === "string") : [],
+    lastOrg: typeof raw?.lastOrg === "string" ? raw!.lastOrg : null,
+    repos: raw?.repos && typeof raw.repos === "object" ? (raw.repos as GithubState["repos"]) : {},
+  };
+}
+
+function writeGithubState(state: GithubState): void {
+  mkdirSync(STATE_DIR, { recursive: true });
+  atomicWrite(GITHUB_FILE, JSON.stringify(state, null, 2));
+}
+
+export function listGithubOrgs(): { orgs: string[]; lastOrg: string | null } {
+  const { orgs, lastOrg } = readGithubState();
+  return { orgs, lastOrg };
+}
+
+export function rememberGithubOrg(org: string): { orgs: string[]; lastOrg: string | null } {
+  const normalized = org.trim();
+  if (!normalized) return listGithubOrgs();
+  const state = readGithubState();
+  state.orgs = [normalized, ...state.orgs.filter((o) => o !== normalized)];
+  state.lastOrg = normalized;
+  writeGithubState(state);
+  return { orgs: state.orgs, lastOrg: state.lastOrg };
+}
+
+export function setLastGithubOrg(org: string): void {
+  const normalized = org.trim();
+  const state = readGithubState();
+  if (!normalized || !state.orgs.includes(normalized) || state.lastOrg === normalized) return;
+  state.lastOrg = normalized;
+  writeGithubState(state);
+}
+
+export function readReposCache(org: string): ReposCacheEntry | null {
+  return readGithubState().repos[org.trim()] ?? null;
+}
+
+export function writeReposCache(org: string, repos: string[]): void {
+  const normalized = org.trim();
+  if (!normalized) return;
+  const state = readGithubState();
+  state.repos[normalized] = { fetchedAt: new Date().toISOString(), repos };
+  writeGithubState(state);
 }
