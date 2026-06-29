@@ -95,8 +95,8 @@ button:focus-visible, textarea:focus-visible, a:focus-visible {
 .launch-head p { margin: 0; color: var(--text-3); font-size: 10px; }
 .draft-state { color: var(--text-3); font: 8px var(--mono); padding-bottom: 3px; }
 .launch-body {
-  width: min(1080px, calc(100% - 48px)); margin: 0 auto; display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px; gap: clamp(32px, 5vw, 64px); padding: 34px 0 64px;
+  width: min(1180px, calc(100% - 48px)); margin: 0 auto; display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px; gap: clamp(28px, 4vw, 48px); padding: 34px 0 64px;
 }
 .launch-main { min-width: 0; }
 .launch-section { padding-bottom: 30px; margin-bottom: 30px; border-bottom: 1px solid var(--border-soft); }
@@ -138,19 +138,19 @@ button:focus-visible, textarea:focus-visible, a:focus-visible {
 .add-skill { display: flex; align-items: center; gap: 4px; border: 1px dashed var(--border); background: transparent; color: var(--text-3); border-radius: 5px; padding: 4px 7px; font-size: 8px; cursor: pointer; }
 .add-skill:hover { color: var(--text-2); border-color: oklch(0.4 0.012 142); }
 .capability-note { margin-left: auto; display: flex; align-items: center; gap: 5px; color: var(--text-3); font-size: 7px; }
-.prompt-section { border-bottom: 0; margin-bottom: 8px; padding-bottom: 0; }
-.prompt-editor { margin-left: 36px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.prompt-section { border-bottom: 0; margin-bottom: 14px; padding-bottom: 0; }
+.prompt-editor { margin-left: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
 .prompt-editor:focus-within { border-color: color-mix(in oklch, var(--accent), var(--border) 45%); box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent), transparent 88%); }
 .prompt-editor textarea {
-  display: block; width: 100%; min-height: 150px; resize: vertical; border: 0; outline: 0; padding: 15px 16px;
-  background: transparent; color: var(--text); font-size: 11px; line-height: 1.7;
+  display: block; width: 100%; min-height: clamp(320px, 52vh, 560px); resize: vertical; border: 0; outline: 0; padding: 20px 22px;
+  background: transparent; color: var(--text); font-size: 13px; line-height: 1.7;
 }
 .prompt-editor textarea::placeholder { color: var(--text-3); }
 .prompt-toolbar { min-height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 9px; border-top: 1px solid var(--border-soft); color: var(--text-3); font-size: 7px; }
 .prompt-toolbar button { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--text-2); padding: 5px 6px; border-radius: 4px; font-size: 8px; cursor: pointer; }
 .prompt-toolbar button:hover { background: var(--surface-hover); }
 .prompt-count { margin-left: auto; font: 8px var(--mono); }
-.launch-footer { margin-left: 36px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.launch-footer { margin-left: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .launch-summary { display: flex; align-items: center; gap: 13px; color: var(--text-3); font: 8px var(--mono); }
 .launch-summary span { display: flex; align-items: center; gap: 5px; }
 .launch-button {
@@ -160,6 +160,20 @@ button:focus-visible, textarea:focus-visible, a:focus-visible {
 .launch-button:hover { background: oklch(0.8 0.105 153); }
 .launch-button:disabled { background: var(--border); color: var(--text-3); cursor: default; }
 .launch-button span { font: 7px var(--mono); opacity: .65; }
+.config-panel { min-width: 0; align-self: start; display: flex; flex-direction: column; gap: 26px; }
+.config-block { min-width: 0; padding: 16px; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--surface), transparent 35%); }
+.config-block-head { margin-bottom: 14px; }
+.config-block-head h3 { margin: 0 0 3px; font-size: 11px; letter-spacing: -.01em; }
+.config-block-head p { margin: 0; color: var(--text-3); font-size: 9px; }
+.config-panel .field-grid { grid-template-columns: 1fr; margin-left: 0; gap: 9px; }
+.config-panel .target-fields, .config-panel .runtime-fields { grid-template-columns: 1fr; }
+.config-panel .field-with-action { grid-template-columns: 1fr; }
+.config-panel .browse-split { grid-template-columns: 1fr 34px; }
+.config-panel .branch-field-with-action { grid-template-columns: minmax(0, 1fr) 38px; }
+.config-panel .branch-toggle { margin: 13px 0 0; }
+.config-panel .single-field { margin-top: 10px; }
+.config-panel .skill-row { margin: 13px 0 0; flex-wrap: wrap; }
+.config-panel .issues-panel, .config-panel .config-block.issues-panel { padding-top: 16px; }
 .issues-panel { min-width: 0; align-self: start; padding-top: 3px; }
 .issues-head { display: flex; align-items: center; justify-content: space-between; height: 29px; border-bottom: 1px solid var(--border); }
 .issues-head div { display: flex; align-items: center; gap: 7px; text-transform: uppercase; letter-spacing: .09em; color: var(--text-2); font-size: 8px; font-weight: 700; }
@@ -696,7 +710,6 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
   .sidebar { display: none; }
   .launch-head { padding: 16px; }
   .launch-body { width: calc(100% - 28px); grid-template-columns: 1fr; padding-top: 22px; }
-  .issues-panel { grid-row: 1; }
   .field-grid { grid-template-columns: 1fr; margin-left: 0; }
   .branch-toggle, .skill-row, .prompt-editor, .launch-footer { margin-left: 0; }
   .skill-row { flex-wrap: wrap; }

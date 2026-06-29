@@ -2,7 +2,6 @@ import {
   ArrowDown,
   ArrowUpRight,
   Bot,
-  Box,
   Braces,
   Check,
   ChevronDown,
@@ -577,11 +576,13 @@ function EmptyIssues() {
 function NewRunView({
   options,
   onLaunch,
+  initial,
 }: {
   options: OptionsPayload;
   onLaunch: (form: LaunchForm) => Promise<void>;
+  initial?: Partial<LaunchForm> | undefined;
 }) {
-  const [form, setForm] = useState<LaunchForm>({
+  const [form, setForm] = useState<LaunchForm>(() => ({
     title: "New agent run",
     repoPath: "",
     branch: "main",
@@ -593,7 +594,8 @@ function NewRunView({
     agent: "generic",
     prompt: "",
     publish: false,
-  });
+    ...initial,
+  }));
   const [skills, setSkills] = useState(["browser"]);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -653,53 +655,7 @@ function NewRunView({
 
       <div className="launch-body">
         <div className="launch-main">
-          <section className="launch-section">
-            <div className="section-heading"><span>01</span><div><h2>Target</h2><p>Where the work should land.</p></div></div>
-            <div className="field-grid target-fields">
-              <div className="field-with-action">
-                <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
-                <div className="browse-split">
-                  <button className="browse-button" disabled={nativeBrowsing} onClick={() => void chooseNativeFolder()}><FolderGit2 size={13} /> {nativeBrowsing ? "Choosing…" : "Browse"}</button>
-                  <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
-                </div>
-              </div>
-              <div className="field-with-action branch-field-with-action">
-                <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
-                <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
-              </div>
-            </div>
-            <label className="branch-toggle">
-              <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
-              <span className="toggle-track"><i /></span>
-              <span><strong>Create a new branch</strong><small>{branchTarget}</small></span>
-            </label>
-            {form.newBranch && (
-              <div className="field-grid single-field">
-                <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
-              </div>
-            )}
-          </section>
-
-          <section className="launch-section">
-            <div className="section-heading"><span>02</span><div><h2>Agent session</h2><p>How and where the agent runs.</p></div></div>
-            <div className="field-grid runtime-fields">
-              <FieldSelect label="Provider" value={form.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => patch({ provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? form.model })} icon={<Bot size={14} />} />
-              <FieldSelect label="Model" value={form.model} options={providerModels} onChange={(model) => patch({ model })} icon={<Bot size={14} />} />
-              <FieldSelect label="Backend" value={form.backend} options={options.backends} onChange={(backend) => patch({ backend })} icon={<Cloud size={14} />} />
-              <FieldInput label="Agent" value={form.agent} onChange={(agent) => patch({ agent })} icon={<Bot size={14} />} />
-            </div>
-            <div className="skill-row">
-              <span className="field-label">Skills</span>
-              {skills.map((skill) => (
-                <span className="skill-chip" key={skill}><Link2 size={11} />{skill}<button aria-label={`Remove ${skill}`} onClick={() => setSkills((current) => current.filter((item) => item !== skill))}><X size={10} /></button></span>
-              ))}
-              <button className="add-skill" onClick={() => setSkills((current) => current.includes("browser") ? current : [...current, "browser"])}><Plus size={11} /> Add skill</button>
-              <span className="capability-note"><Box size={11} /> Capability filtering comes from /api/options</span>
-            </div>
-          </section>
-
           <section className="launch-section prompt-section">
-            <div className="section-heading"><span>03</span><div><h2>Prompt</h2><p>Give the agent a clear outcome and useful constraints.</p></div></div>
             <div className="prompt-editor">
               <textarea
                 value={form.prompt}
@@ -729,13 +685,59 @@ function NewRunView({
           </div>
         </div>
 
-        <aside className="issues-panel">
-          <div className="issues-head">
-            <div><span>Open issues</span><b>0</b></div>
-            <button aria-label="Search issues"><Search size={14} /></button>
-          </div>
-          <p>Issue discovery is an API concern; the column stays honest until it exists.</p>
-          <EmptyIssues />
+        <aside className="config-panel">
+          <section className="config-block">
+            <div className="config-block-head"><h3>Target</h3><p>Where the work should land.</p></div>
+            <div className="field-grid target-fields">
+              <div className="field-with-action">
+                <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
+                <div className="browse-split">
+                  <button className="browse-button" disabled={nativeBrowsing} onClick={() => void chooseNativeFolder()}><FolderGit2 size={13} /> {nativeBrowsing ? "Choosing…" : "Browse"}</button>
+                  <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
+                </div>
+              </div>
+              <div className="field-with-action branch-field-with-action">
+                <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
+                <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
+              </div>
+            </div>
+            <label className="branch-toggle">
+              <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
+              <span className="toggle-track"><i /></span>
+              <span><strong>Create a new branch</strong><small>{branchTarget}</small></span>
+            </label>
+            {form.newBranch && (
+              <div className="field-grid single-field">
+                <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
+              </div>
+            )}
+          </section>
+
+          <section className="config-block">
+            <div className="config-block-head"><h3>Agent session</h3><p>How and where the agent runs.</p></div>
+            <div className="field-grid runtime-fields">
+              <FieldSelect label="Provider" value={form.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => patch({ provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? form.model })} icon={<Bot size={14} />} />
+              <FieldSelect label="Model" value={form.model} options={providerModels} onChange={(model) => patch({ model })} icon={<Bot size={14} />} />
+              <FieldSelect label="Backend" value={form.backend} options={options.backends} onChange={(backend) => patch({ backend })} icon={<Cloud size={14} />} />
+              <FieldInput label="Agent" value={form.agent} onChange={(agent) => patch({ agent })} icon={<Bot size={14} />} />
+            </div>
+            <div className="skill-row">
+              <span className="field-label">Skills</span>
+              {skills.map((skill) => (
+                <span className="skill-chip" key={skill}><Link2 size={11} />{skill}<button aria-label={`Remove ${skill}`} onClick={() => setSkills((current) => current.filter((item) => item !== skill))}><X size={10} /></button></span>
+              ))}
+              <button className="add-skill" onClick={() => setSkills((current) => current.includes("browser") ? current : [...current, "browser"])}><Plus size={11} /> Add skill</button>
+            </div>
+          </section>
+
+          <section className="config-block issues-panel">
+            <div className="issues-head">
+              <div><span>Open issues</span><b>0</b></div>
+              <button aria-label="Search issues"><Search size={14} /></button>
+            </div>
+            <p>Issue discovery is an API concern; the column stays honest until it exists.</p>
+            <EmptyIssues />
+          </section>
         </aside>
       </div>
       {browseOpen && (
@@ -963,10 +965,12 @@ function ConversationView({
   rendered,
   onContinue,
   onRefresh,
+  onFork,
 }: {
   rendered: RenderedConversation;
   onContinue: (task: string, latest: AgentSession) => Promise<void>;
   onRefresh: () => void;
+  onFork: () => void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -1045,7 +1049,7 @@ function ConversationView({
           </div>
         </div>
         <div className="head-actions">
-          <button className="secondary-button" disabled><GitBranch size={14} /> Fork</button>
+          <button className="secondary-button" onClick={onFork} title="Start a new run with these settings"><GitBranch size={14} /> Fork</button>
           <button className="stop-button" disabled title="Stop requires orchestrator cancellation support">
             <CircleStop size={14} /> Stop
           </button>
@@ -1113,6 +1117,7 @@ function App() {
     return match?.[1] ?? null;
   });
   const [view, setView] = useState<"conversation" | "new">(() => selectedId ? "conversation" : "new");
+  const [draft, setDraft] = useState<Partial<LaunchForm> | undefined>(undefined);
   const [options, setOptions] = useState<OptionsPayload>(fallbackOptions);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runStates, setRunStates] = useState<Record<string, RunState>>({});
@@ -1165,6 +1170,28 @@ function App() {
   };
 
   const newRun = () => {
+    setDraft(undefined);
+    setSelectedId(null);
+    setRendered(null);
+    setView("new");
+    window.history.pushState(null, "", "/new");
+  };
+
+  const forkRun = () => {
+    if (!rendered) return;
+    const latest = rendered.sessions.at(-1);
+    const target = rendered.conversation.target;
+    setDraft({
+      title: rendered.conversation.title,
+      repoPath: target.kind === "local" ? target.repoPath : "",
+      branch: target.branch,
+      newBranch: false,
+      provider: (latest?.settings.provider as ProviderKind) ?? "pi",
+      model: latest?.settings.model ?? options.providers[0]?.models[0] ?? "anthropic/claude-haiku-4.5",
+      backend: (latest?.settings.backend as BackendKind) ?? "local",
+      agent: latest?.settings.agent ?? "generic",
+      prompt: "",
+    });
     setSelectedId(null);
     setRendered(null);
     setView("new");
@@ -1254,9 +1281,9 @@ function App() {
         </aside>
 
         {view === "new" ? (
-          <NewRunView options={options} onLaunch={launch} />
+          <NewRunView key={draft ? "fork" : "new"} options={options} onLaunch={launch} initial={draft} />
         ) : rendered ? (
-          <ConversationView rendered={rendered} onContinue={continueConversation} onRefresh={() => { if (selectedId) void loadConversation(selectedId); }} />
+          <ConversationView rendered={rendered} onContinue={continueConversation} onRefresh={() => { if (selectedId) void loadConversation(selectedId); }} onFork={forkRun} />
         ) : (
           <section className="conversation">
             <div className="empty-state loading">
