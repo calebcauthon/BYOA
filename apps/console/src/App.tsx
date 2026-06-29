@@ -117,6 +117,32 @@ interface LaunchForm {
   publish: boolean;
 }
 
+interface LocalRecent {
+  path: string;
+  selectedAt: string;
+}
+
+interface LocalBrowseEntry {
+  name: string;
+  path: string;
+  isGit: boolean;
+}
+
+interface LocalBrowseRoot {
+  label: string;
+  path: string;
+}
+
+interface LocalBrowsePayload {
+  current: string;
+  name: string;
+  parent: string | null;
+  isGit: boolean;
+  entries: LocalBrowseEntry[];
+  roots: LocalBrowseRoot[];
+  recents: LocalRecent[];
+}
+
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") ?? "";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -301,6 +327,112 @@ function FieldSelect<T extends string>({
   );
 }
 
+function LocalCheckoutModal({
+  initialPath,
+  onClose,
+  onChoose,
+}: {
+  initialPath: string;
+  onClose: () => void;
+  onChoose: (path: string) => void;
+}) {
+  const [path, setPath] = useState(initialPath || "");
+  const [data, setData] = useState<LocalBrowsePayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async (nextPath?: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const query = nextPath ? `?path=${encodeURIComponent(nextPath)}` : "";
+      const next = await api<LocalBrowsePayload>(`/api/local/browse${query}`);
+      setData(next);
+      setPath(next.current);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load(initialPath);
+  }, [initialPath, load]);
+
+  const choose = async (chosen: string) => {
+    await api<{ recents: LocalRecent[] }>("/api/local/recents", {
+      method: "POST",
+      body: JSON.stringify({ path: chosen }),
+    });
+    onChoose(chosen);
+    onClose();
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="folder-modal" role="dialog" aria-modal="true" aria-labelledby="folder-modal-title">
+        <header className="folder-modal-head">
+          <div>
+            <div className="eyebrow">LOCAL CHECKOUT</div>
+            <h2 id="folder-modal-title">Choose a folder</h2>
+          </div>
+          <button className="icon-button" aria-label="Close folder picker" onClick={onClose}><X size={16} /></button>
+        </header>
+
+        <div className="folder-path-row">
+          <input value={path} onChange={(event) => setPath(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void load(path); }} aria-label="Folder path" />
+          <button className="secondary-button" onClick={() => void load(path)}>Go</button>
+          <button className="launch-button" disabled={!data} onClick={() => data && void choose(data.current)}>Use this folder</button>
+        </div>
+
+        {error && <div className="form-error folder-error">{error}</div>}
+
+        <div className="folder-modal-body">
+          <aside className="folder-rail">
+            <div className="folder-section-title">Recent</div>
+            {data?.recents.length ? data.recents.map((recent) => (
+              <button className="folder-rail-row" key={recent.path} onClick={() => void choose(recent.path)}>
+                <FolderGit2 size={12} />
+                <span>{recent.path}</span>
+              </button>
+            )) : <p>No recent checkouts yet.</p>}
+
+            <div className="folder-section-title">Locations</div>
+            {data?.roots.map((root) => (
+              <button className="folder-rail-row" key={root.path} onClick={() => void load(root.path)}>
+                <ChevronRight size={12} />
+                <span>{root.label}</span>
+              </button>
+            ))}
+          </aside>
+
+          <div className="folder-browser">
+            <div className="folder-browser-head">
+              <button className="secondary-button" disabled={!data?.parent} onClick={() => data?.parent && void load(data.parent)}>
+                <ChevronRight className="rotated" size={13} /> Up
+              </button>
+              <span>{loading ? "Loading…" : data?.current}</span>
+              {data?.isGit && <em>Git repo</em>}
+            </div>
+            <div className="folder-list">
+              {data?.entries.map((entry) => (
+                <button className={`folder-row ${entry.isGit ? "git" : ""}`} key={entry.path} onClick={() => void load(entry.path)} onDoubleClick={() => entry.isGit && void choose(entry.path)}>
+                  <FolderGit2 size={14} />
+                  <span><strong>{entry.name}</strong><small>{entry.path}</small></span>
+                  {entry.isGit && <em>repo</em>}
+                  <ChevronRight size={14} />
+                </button>
+              ))}
+              {data && data.entries.length === 0 && <div className="folder-empty">No child folders here.</div>}
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function EmptyIssues() {
   return (
     <div className="issue-empty">
@@ -334,6 +466,7 @@ function NewRunView({
   const [skills, setSkills] = useState(["browser"]);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [browseOpen, setBrowseOpen] = useState(false);
 
   const providerModels = options.providers.find((p) => p.id === form.provider)?.models ?? [form.model];
   const branchTarget = form.newBranch ? form.branchName : form.branch;
@@ -368,7 +501,10 @@ function NewRunView({
           <section className="launch-section">
             <div className="section-heading"><span>01</span><div><h2>Target</h2><p>Where the work should land.</p></div></div>
             <div className="field-grid target-fields">
-              <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
+              <div className="field-with-action">
+                <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
+                <button className="browse-button" onClick={() => setBrowseOpen(true)}><FolderGit2 size={13} /> Browse</button>
+              </div>
               <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
             </div>
             <label className="branch-toggle">
@@ -441,6 +577,13 @@ function NewRunView({
           <EmptyIssues />
         </aside>
       </div>
+      {browseOpen && (
+        <LocalCheckoutModal
+          initialPath={form.repoPath}
+          onClose={() => setBrowseOpen(false)}
+          onChoose={(repoPath) => patch({ repoPath })}
+        />
+      )}
     </section>
   );
 }

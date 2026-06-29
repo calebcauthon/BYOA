@@ -22,6 +22,7 @@ import type { Conversation, Event } from "@automations/core";
 
 export const STATE_DIR = process.env.AUTOMATIONS_STATE_DIR ?? join(process.cwd(), ".automations-state");
 const CONV_DIR = join(STATE_DIR, "conversations");
+const LOCAL_RECENTS_FILE = join(STATE_DIR, "local-recents.json");
 
 export function conversationDir(id: string): string {
   return join(CONV_DIR, id);
@@ -90,4 +91,29 @@ export function readEvents(convId: string): Event[] {
       }
     })
     .filter((e): e is Event => e !== null);
+}
+
+// ───────────────────────────── local checkout recents ─────────────────────────────
+
+export interface LocalRecent {
+  path: string;
+  selectedAt: string;
+}
+
+export function listLocalRecents(): LocalRecent[] {
+  const recents = readJSON<LocalRecent[]>(LOCAL_RECENTS_FILE);
+  if (!Array.isArray(recents)) return [];
+  return recents
+    .filter((item): item is LocalRecent => typeof item?.path === "string" && typeof item?.selectedAt === "string")
+    .sort((a, b) => (a.selectedAt < b.selectedAt ? 1 : -1))
+    .slice(0, 12);
+}
+
+export function rememberLocalRecent(path: string): LocalRecent[] {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const now = new Date().toISOString();
+  const normalized = path.replace(/\/+$/, "") || "/";
+  const next = [{ path: normalized, selectedAt: now }, ...listLocalRecents().filter((item) => item.path !== normalized)].slice(0, 12);
+  atomicWrite(LOCAL_RECENTS_FILE, JSON.stringify(next, null, 2));
+  return next;
 }

@@ -9,9 +9,10 @@
  *   GET  /api/conversations/:id/timeline                                     → LogEntry[] (unified)
  *   POST /api/conversations/:id/sessions         { settings, task|prompt }    → { sessionId }
  */
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, join, normalize } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, extname, join, normalize, resolve } from "node:path";
 import {
   createConversation,
   list,
@@ -20,7 +21,7 @@ import {
   type StartSessionInput,
 } from "../conversation/service.ts";
 import { buildTimeline } from "../logs/timeline.ts";
-import { getConversation } from "../state/store.ts";
+import { getConversation, listLocalRecents, rememberLocalRecent } from "../state/store.ts";
 import type { Target } from "@automations/core";
 
 const CONSOLE_DIST = process.env.AUTOMATIONS_CONSOLE_DIST ?? join(process.cwd(), "apps", "console", "dist");
@@ -90,6 +91,51 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
 }
 
+function safeStat(path: string): { isDirectory: boolean; isGit: boolean } | null {
+  try {
+    const stat = statSync(path);
+    if (!stat.isDirectory()) return null;
+    return { isDirectory: true, isGit: existsSync(join(path, ".git")) };
+  } catch {
+    return null;
+  }
+}
+
+function browseLocal(pathParam: string | null): Record<string, unknown> {
+  const requested = pathParam && pathParam.trim() ? pathParam : homedir();
+  const current = resolve(requested.replace(/^~(?=\/|$)/, homedir()));
+  const stat = safeStat(current);
+  if (!stat) throw new Error(`not a readable directory: ${current}`);
+
+  const entries = readdirSync(current, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => {
+      const fullPath = join(current, entry.name);
+      return {
+        name: entry.name,
+        path: fullPath,
+        isGit: existsSync(join(fullPath, ".git")),
+      };
+    })
+    .sort((a, b) => Number(b.isGit) - Number(a.isGit) || a.name.localeCompare(b.name));
+
+  const parent = dirname(current);
+  return {
+    current,
+    name: basename(current) || current,
+    parent: parent === current ? null : parent,
+    isGit: stat.isGit,
+    entries,
+    roots: [
+      { label: "Home", path: homedir() },
+      { label: "Current repo", path: process.cwd() },
+      { label: "Code", path: join(homedir(), "code") },
+      { label: "Waymark", path: join(homedir(), "waymark") },
+    ].filter((root) => safeStat(root.path)),
+    recents: listLocalRecents(),
+  };
+}
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (req.method === "OPTIONS") {
@@ -117,6 +163,25 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       ],
       skills: [{ id: "browser", requires: { backendCapabilities: ["browser"] } }],
     });
+  }
+
+  // /api/local/browse and /api/local/recents — local-only operator affordances
+  // for choosing a checkout path from the browser. Recents are host-owned state.
+  if (parts[0] === "local" && parts[1] === "browse" && method === "GET") {
+    try {
+      return send(res, 200, browseLocal(url.searchParams.get("path")));
+    } catch (err) {
+      return send(res, 400, { error: String(err) });
+    }
+  }
+  if (parts[0] === "local" && parts[1] === "recents") {
+    if (method === "GET") return send(res, 200, { recents: listLocalRecents() });
+    if (method === "POST") {
+      const body = await readBody(req);
+      const path = typeof body.path === "string" ? resolve(body.path.replace(/^~(?=\/|$)/, homedir())) : "";
+      if (!path || !safeStat(path)) return send(res, 400, { error: "path must be a readable directory" });
+      return send(res, 200, { recents: rememberLocalRecent(path) });
+    }
   }
 
   // /api/conversations
