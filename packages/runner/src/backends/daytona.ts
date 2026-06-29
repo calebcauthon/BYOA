@@ -6,7 +6,7 @@
  * back OUT, both over the Daytona SDK:
  *   • local target  → tar the repo on the host, upload it, extract in /workspace
  *   • remote target → git.clone into /workspace
- *   • prompt (stdin) → uploaded to a file + redirected (executeCommand has no stdin)
+ *   • prompt (stdin) → uploaded to a file + redirected (session exec has no stdin)
  *   • transcript     → read back via exec(find)+exec(cat) in readDir
  *
  * Commits the agent makes live in the sandbox and stay there until something
@@ -16,11 +16,12 @@
  * Env: DAYTONA_API_KEY (required), AUTOMATIONS_SANDBOX_IMAGE (default node:22),
  *      AUTOMATIONS_KEEP_SANDBOX (keep the sandbox for debugging).
  *
- * NOTE: uses the synchronous executeCommand (blocks, returns a real exit code).
- * If long runs start hitting gateway timeouts we'd switch to the async
- * session API + completion sentinel (ADR-0001 Decision 5) — not needed yet.
+ * Agent commands use Daytona's async session API and a completion sentinel.
+ * This avoids holding one HTTP response open for a long run and gives the host
+ * a real wall-clock timeout even when Daytona's command exitCode stays unset.
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -40,6 +41,7 @@ import type { SessionLog } from "../logging.ts";
 const IMAGE = process.env.AUTOMATIONS_SANDBOX_IMAGE ?? "node:22";
 const WORKDIR = "/workspace";
 const SCRATCH = "/agent-session";
+const SESSION_POLL_MS = 1_000;
 
 const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -200,27 +202,113 @@ class DaytonaBackend implements Backend {
     const src = opts.source ?? "orchestrator";
     let command = cmd.map(shq).join(" ");
 
-    // executeCommand has no stdin — upload the input to a file and redirect.
+    // Session exec has no stdin — upload the input to a file and redirect.
     if (opts.input !== undefined) {
       const remote = `/tmp/stdin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       await this.box().fs.uploadFile(Buffer.from(opts.input, "utf8"), remote);
       command = `${command} < ${shq(remote)}`;
     }
 
-    log.emit("orchestrator", "debug", `exec: ${redactStr(cmd.join(" "), opts.redact)}`, { cwd: opts.cwd ?? WORKDIR, source: src, via: "daytona" });
+    const cwd = opts.cwd ?? WORKDIR;
+    const env = opts.env
+      ? Object.entries(opts.env)
+          .map(([key, value]) => shq(`${key}=${value}`))
+          .join(" ")
+      : "";
+    const sentinel = `__AUTOMATIONS_DONE_${randomUUID().replaceAll("-", "")}__`;
+    const sentinelRe = new RegExp(`${sentinel}:(-?\\d+)`);
+    const sessionId = `exec-${randomUUID()}`;
+    const fullCommand =
+      `{ cd ${shq(cwd)} && ${env ? `env ${env} ` : ""}${command}; ` +
+      `status=$?; printf '${sentinel}:%s\\n' "$status"; }`;
+
+    log.emit("orchestrator", "debug", `exec: ${redactStr(cmd.join(" "), opts.redact)}`, { cwd, source: src, via: "daytona-session" });
     const startedAt = Date.now();
     const hb =
       opts.heartbeatMs && opts.heartbeatMs > 0
         ? setInterval(() => log.emit("backend", "info", `still running (${Math.round((Date.now() - startedAt) / 1000)}s): ${cmd[0]}`), opts.heartbeatMs)
         : undefined;
+    let sessionCreated = false;
     try {
-      const r = await this.box().process.executeCommand(command, opts.cwd ?? WORKDIR, opts.env, opts.timeoutMs ? Math.ceil(opts.timeoutMs / 1000) : undefined);
-      const stdout = r.result ?? "";
-      opts.onStdout?.(stdout);
+      const process = this.box().process;
+      await process.createSession(sessionId);
+      sessionCreated = true;
+      const started = await process.executeSessionCommand(sessionId, {
+        command: fullCommand,
+        runAsync: true,
+      });
+
+      let stdout = "";
+      let stderr = "";
+      let emittedLength = 0;
+      let exitCode: number | undefined;
+
+      while (exitCode === undefined) {
+        try {
+          const logs = await process.getSessionCommandLogs(sessionId, started.cmdId);
+          stdout = logs.stdout ?? logs.output ?? stdout;
+          stderr = logs.stderr ?? stderr;
+
+          const match = sentinelRe.exec(stdout);
+          if (match?.[1] !== undefined) exitCode = Number(match[1]);
+
+          const cleanSnapshot = stdout.replace(sentinelRe, "");
+          if (opts.onStdout && cleanSnapshot.length > emittedLength) {
+            opts.onStdout(cleanSnapshot.slice(emittedLength));
+            emittedLength = cleanSnapshot.length;
+          }
+        } catch (error) {
+          log.emit("backend", "warn", `session log poll failed; retrying: ${String(error)}`);
+        }
+
+        if (exitCode === undefined) {
+          try {
+            const status = await process.getSessionCommand(sessionId, started.cmdId);
+            if (status.exitCode !== undefined && status.exitCode !== null) exitCode = status.exitCode;
+          } catch (error) {
+            log.emit("backend", "warn", `session status poll failed; retrying: ${String(error)}`);
+          }
+        }
+
+        if (exitCode !== undefined) break;
+        const elapsed = Date.now() - startedAt;
+        if (opts.timeoutMs !== undefined && elapsed >= opts.timeoutMs) {
+          throw new Error(`daytona command exceeded wall-clock timeout (${opts.timeoutMs}ms): ${cmd[0]}`);
+        }
+        const remaining =
+          opts.timeoutMs === undefined ? SESSION_POLL_MS : Math.min(SESSION_POLL_MS, opts.timeoutMs - elapsed);
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, remaining)));
+      }
+
+      // The SDK exit code is only a fallback and can arrive just before the
+      // final log snapshot. Fetch once more so a fast completion does not
+      // truncate output when no sentinel was observed.
+      if (!sentinelRe.test(stdout)) {
+        try {
+          const logs = await process.getSessionCommandLogs(sessionId, started.cmdId);
+          stdout = logs.stdout ?? logs.output ?? stdout;
+          stderr = logs.stderr ?? stderr;
+          const cleanSnapshot = stdout.replace(sentinelRe, "");
+          if (opts.onStdout && cleanSnapshot.length > emittedLength) {
+            opts.onStdout(cleanSnapshot.slice(emittedLength));
+          }
+        } catch (error) {
+          log.emit("backend", "warn", `final session log fetch failed: ${String(error)}`);
+        }
+      }
+
+      stdout = stdout.replace(sentinelRe, "");
       if (opts.logStdout !== false && stdout.trim()) log.emit(src, "info", redactStr(stdout.trimEnd(), opts.redact));
-      return { exitCode: r.exitCode, stdout, stderr: "" };
+      return { exitCode, stdout, stderr };
     } finally {
       if (hb) clearInterval(hb);
+      if (sessionCreated) {
+        try {
+          await this.box().process.deleteSession(sessionId);
+        } catch (error) {
+          log.emit("backend", "warn", `failed to delete command session ${sessionId}: ${String(error)}`);
+        }
+      }
     }
   }
 
