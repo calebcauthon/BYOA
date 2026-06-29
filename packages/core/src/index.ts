@@ -133,7 +133,17 @@ export interface Usage {
   totalTokens?: number;
 }
 
-/** What a coding agent reports after a session. Stored under the agent's name on
+/**
+ * Outward content the AGENT authored for the orchestrator to publish (§4.4).
+ * The agent emits these in its structured output; the orchestrator (sole GitHub
+ * liaison) posts them deterministically after pushing the code. Generalizes
+ * beyond coding — a QA run can publish a comment + images and no code at all.
+ */
+export type Publication =
+  | { kind: "comment"; target: "pr" | "issue"; body: string }
+  | { kind: "image"; path: string; caption?: string };
+
+/** What an agent reports after a session. Stored under the agent's name on
  *  the blackboard: `{ [agentName]: AgentResult }`. */
 export interface AgentResult {
   /** did the agent change the repo (HEAD moved or dirty tree) */
@@ -146,6 +156,8 @@ export interface AgentResult {
   usage: Usage;
   /** pointer to the raw transcript (pi: session JSONL path; claude: session id) */
   transcriptRef?: string;
+  /** content the agent authored for the orchestrator to publish (§4.4) */
+  publish?: Publication[];
 }
 
 // ───────────────────────────── Verdict + Finding ─────────────────────────────

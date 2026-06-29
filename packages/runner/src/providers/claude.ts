@@ -24,6 +24,7 @@ import type { AgentResult, Blackboard, Usage } from "@automations/core";
 import { registerProvider, type Provider, type ProviderRunInput } from "./index.ts";
 import type { Backend, ExecOpts } from "../backends/index.ts";
 import type { SessionLog } from "../logging.ts";
+import { publishProtocol, readPublish } from "../publish.ts";
 
 const CLAUDE_TIMEOUT_MS = Number(process.env.RUNNER_CLAUDE_TIMEOUT_MS ?? 30 * 60 * 1000);
 const HEARTBEAT_MS = 30 * 1000;
@@ -36,7 +37,7 @@ async function gitHead(backend: Backend, cwd: string, log: SessionLog): Promise<
 class ClaudeProvider implements Provider {
   readonly kind = "claude-subscription";
 
-  async run({ settings, backend, workdir, prompt, log }: ProviderRunInput): Promise<Blackboard> {
+  async run({ settings, backend, workdir, prompt, scratchDir, log }: ProviderRunInput): Promise<Blackboard> {
     const headBefore = await gitHead(backend, workdir, log);
     log.emit("agent", "info", `claude starting (model=${settings.model}, agent=${settings.agent})`, { headBefore });
 
@@ -85,7 +86,7 @@ class ClaudeProvider implements Provider {
     const cmd = [
       "claude",
       "-p",
-      prompt,
+      `${prompt}${publishProtocol(scratchDir)}`,
       "--output-format",
       "stream-json",
       "--verbose",
@@ -118,6 +119,7 @@ class ClaudeProvider implements Provider {
       usage,
     });
 
+    const publish = await readPublish(backend, scratchDir, log);
     const result: AgentResult = {
       changed,
       headBefore,
@@ -125,6 +127,7 @@ class ClaudeProvider implements Provider {
       uncommitted: porcelain.length > 0,
       usage,
       ...(sessionId ? { transcriptRef: sessionId } : {}),
+      ...(publish.length > 0 ? { publish } : {}),
     };
     return { [settings.agent]: result };
   }

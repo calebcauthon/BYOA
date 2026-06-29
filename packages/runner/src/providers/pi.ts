@@ -20,6 +20,7 @@ import type { AgentResult, Blackboard, Usage } from "@automations/core";
 import { registerProvider, type Provider, type ProviderRunInput } from "./index.ts";
 import type { Backend, BackendFile, ExecOpts } from "../backends/index.ts";
 import type { SessionLog } from "../logging.ts";
+import { publishProtocol, readPublish } from "../publish.ts";
 
 const PI_TIMEOUT_MS = Number(process.env.RUNNER_PI_TIMEOUT_MS ?? 30 * 60 * 1000);
 const HEARTBEAT_MS = 30 * 1000;
@@ -53,7 +54,7 @@ class PiProvider implements Provider {
     ];
     const opts: ExecOpts = {
       cwd: workdir,
-      input: prompt,
+      input: `${prompt}${publishProtocol(scratchDir)}`,
       env: { OPENROUTER_API_KEY: key },
       timeoutMs: PI_TIMEOUT_MS,
       heartbeatMs: HEARTBEAT_MS,
@@ -82,6 +83,7 @@ class PiProvider implements Provider {
       usage,
     });
 
+    const publish = await readPublish(backend, scratchDir, log);
     const result: AgentResult = {
       changed,
       headBefore,
@@ -89,6 +91,7 @@ class PiProvider implements Provider {
       uncommitted: porcelain.length > 0,
       usage,
       ...(transcriptRef ? { transcriptRef } : {}),
+      ...(publish.length > 0 ? { publish } : {}),
     };
     return { [settings.agent]: result };
   }
