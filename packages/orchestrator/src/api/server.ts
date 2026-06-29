@@ -23,7 +23,13 @@ import {
   type StartSessionInput,
 } from "../conversation/service.ts";
 import { buildTimeline } from "../logs/timeline.ts";
-import { getConversation, listLocalRecents, rememberLocalRecent } from "../state/store.ts";
+import {
+  getConversation,
+  listBranchRecents,
+  listLocalRecents,
+  rememberBranchRecent,
+  rememberLocalRecent,
+} from "../state/store.ts";
 import type { Target } from "@automations/core";
 
 const CONSOLE_DIST = process.env.AUTOMATIONS_CONSOLE_DIST ?? join(process.cwd(), "apps", "console", "dist");
@@ -104,9 +110,13 @@ function safeStat(path: string): { isDirectory: boolean; isGit: boolean } | null
   }
 }
 
+function normalizeLocalPath(path: string): string {
+  return resolve(path.replace(/^~(?=\/|$)/, homedir()));
+}
+
 function browseLocal(pathParam: string | null): Record<string, unknown> {
   const requested = pathParam && pathParam.trim() ? pathParam : homedir();
-  const current = resolve(requested.replace(/^~(?=\/|$)/, homedir()));
+  const current = normalizeLocalPath(requested);
   const stat = safeStat(current);
   if (!stat) throw new Error(`not a readable directory: ${current}`);
 
@@ -145,7 +155,7 @@ function appleScriptString(value: string): string {
 
 async function chooseNativeFolder(startPath?: string): Promise<string> {
   const fallback = homedir();
-  const requested = startPath && startPath.trim() ? resolve(startPath.replace(/^~(?=\/|$)/, homedir())) : fallback;
+  const requested = startPath && startPath.trim() ? normalizeLocalPath(startPath) : fallback;
   const base = safeStat(requested) ? requested : fallback;
   const script = [
     `set defaultFolder to POSIX file ${appleScriptString(base)} as alias`,
@@ -154,6 +164,50 @@ async function chooseNativeFolder(startPath?: string): Promise<string> {
   ];
   const { stdout } = await execFileAsync("osascript", script.flatMap((line) => ["-e", line]), { timeout: 120_000 });
   return resolve(stdout.trim());
+}
+
+async function git(repoPath: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["-C", repoPath, ...args], { timeout: 15_000, maxBuffer: 1024 * 1024 });
+  return stdout;
+}
+
+function cleanBranch(raw: string): string | null {
+  const branch = raw.trim().replace(/^remotes\//, "");
+  if (!branch || branch.includes("HEAD ->")) return null;
+  return branch;
+}
+
+async function listBranches(repoPath: string): Promise<Record<string, unknown>> {
+  const path = normalizeLocalPath(repoPath);
+  const stat = safeStat(path);
+  if (!stat?.isGit) throw new Error(`not a git repository: ${path}`);
+
+  const [currentRaw, localRaw, allRaw] = await Promise.all([
+    git(path, ["branch", "--show-current"]).catch(() => ""),
+    git(path, ["branch", "--format=%(refname:short)"]),
+    git(path, ["branch", "--all", "--format=%(refname:short)"]),
+  ]);
+  const current = currentRaw.trim();
+  const locals = new Set(localRaw.split("\n").map(cleanBranch).filter((b): b is string => b !== null));
+  const seen = new Set<string>();
+  const branches = allRaw
+    .split("\n")
+    .map(cleanBranch)
+    .filter((branch): branch is string => branch !== null)
+    .filter((branch) => {
+      if (seen.has(branch)) return false;
+      seen.add(branch);
+      return true;
+    })
+    .map((branch) => ({
+      name: branch,
+      current: branch === current,
+      remote: branch.includes("/"),
+      local: locals.has(branch),
+    }))
+    .sort((a, b) => Number(b.current) - Number(a.current) || Number(b.local) - Number(a.local) || a.name.localeCompare(b.name));
+
+  return { repoPath: path, current, branches, recents: listBranchRecents(path) };
 }
 
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -198,7 +252,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (method === "GET") return send(res, 200, { recents: listLocalRecents() });
     if (method === "POST") {
       const body = await readBody(req);
-      const path = typeof body.path === "string" ? resolve(body.path.replace(/^~(?=\/|$)/, homedir())) : "";
+      const path = typeof body.path === "string" ? normalizeLocalPath(body.path) : "";
       if (!path || !safeStat(path)) return send(res, 400, { error: "path must be a readable directory" });
       return send(res, 200, { recents: rememberLocalRecent(path) });
     }
@@ -213,6 +267,30 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const message = String(err);
       if (message.includes("User canceled")) return send(res, 400, { cancelled: true, error: "folder selection cancelled" });
       return send(res, 500, { error: `native folder picker failed: ${message}` });
+    }
+  }
+  if (parts[0] === "local" && parts[1] === "branches" && method === "GET") {
+    const repoPath = url.searchParams.get("repoPath");
+    if (!repoPath) return send(res, 400, { error: "repoPath is required" });
+    try {
+      return send(res, 200, await listBranches(repoPath));
+    } catch (err) {
+      return send(res, 400, { error: String(err) });
+    }
+  }
+  if (parts[0] === "local" && parts[1] === "branch-recents") {
+    if (method === "GET") {
+      const repoPath = url.searchParams.get("repoPath");
+      if (!repoPath) return send(res, 400, { error: "repoPath is required" });
+      return send(res, 200, { recents: listBranchRecents(normalizeLocalPath(repoPath)) });
+    }
+    if (method === "POST") {
+      const body = await readBody(req);
+      const repoPath = typeof body.repoPath === "string" ? normalizeLocalPath(body.repoPath) : "";
+      const branch = typeof body.branch === "string" ? body.branch.trim() : "";
+      if (!repoPath || !safeStat(repoPath)?.isGit) return send(res, 400, { error: "repoPath must be a git repository" });
+      if (!branch) return send(res, 400, { error: "branch is required" });
+      return send(res, 200, { recents: rememberBranchRecent(repoPath, branch) });
     }
   }
 

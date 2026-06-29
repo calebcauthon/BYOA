@@ -150,6 +150,26 @@ interface NativeFolderPayload {
   error?: string;
 }
 
+interface BranchRecent {
+  repoPath: string;
+  branch: string;
+  selectedAt: string;
+}
+
+interface BranchOption {
+  name: string;
+  current: boolean;
+  remote: boolean;
+  local: boolean;
+}
+
+interface BranchBrowsePayload {
+  repoPath: string;
+  current: string;
+  branches: BranchOption[];
+  recents: BranchRecent[];
+}
+
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") ?? "";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -440,6 +460,110 @@ function LocalCheckoutModal({
   );
 }
 
+function BranchPickerModal({
+  repoPath,
+  selectedBranch,
+  onClose,
+  onChoose,
+}: {
+  repoPath: string;
+  selectedBranch: string;
+  onClose: () => void;
+  onChoose: (branch: string) => void;
+}) {
+  const [data, setData] = useState<BranchBrowsePayload | null>(null);
+  const [filter, setFilter] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!repoPath.trim()) {
+      setError("Choose a local checkout first.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await api<BranchBrowsePayload>(`/api/local/branches?repoPath=${encodeURIComponent(repoPath)}`));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [repoPath]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const choose = async (branch: string) => {
+    await api<{ recents: BranchRecent[] }>("/api/local/branch-recents", {
+      method: "POST",
+      body: JSON.stringify({ repoPath, branch }),
+    });
+    onChoose(branch);
+    onClose();
+  };
+
+  const filtered = (data?.branches ?? []).filter((branch) => branch.name.toLowerCase().includes(filter.toLowerCase()));
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="folder-modal branch-modal" role="dialog" aria-modal="true" aria-labelledby="branch-modal-title">
+        <header className="folder-modal-head">
+          <div>
+            <div className="eyebrow">BASE BRANCH</div>
+            <h2 id="branch-modal-title">Choose a branch</h2>
+          </div>
+          <button className="icon-button" aria-label="Close branch picker" onClick={onClose}><X size={16} /></button>
+        </header>
+
+        <div className="folder-path-row">
+          <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter all detected branches…" aria-label="Filter branches" />
+          <button className="secondary-button" onClick={() => void load()}>Refresh</button>
+          <button className="launch-button" disabled={!selectedBranch} onClick={() => void choose(selectedBranch)}>Use {selectedBranch || "branch"}</button>
+        </div>
+
+        {error && <div className="form-error folder-error">{error}</div>}
+
+        <div className="folder-modal-body">
+          <aside className="folder-rail">
+            <div className="folder-section-title">Recent</div>
+            {data?.recents.length ? data.recents.map((recent) => (
+              <button className="folder-rail-row" key={`${recent.repoPath}:${recent.branch}`} onClick={() => void choose(recent.branch)}>
+                <GitBranch size={12} />
+                <span>{recent.branch}</span>
+              </button>
+            )) : <p>No recent branches for this checkout yet.</p>}
+
+            <div className="folder-section-title">Repository</div>
+            <p>{repoPath || "No local checkout selected."}</p>
+            {data?.current && <button className="folder-rail-row" onClick={() => void choose(data.current)}><Check size={12} /><span>Current: {data.current}</span></button>}
+          </aside>
+
+          <div className="folder-browser">
+            <div className="folder-browser-head">
+              <span>{loading ? "Loading branches…" : `${filtered.length} branches detected`}</span>
+              {data?.current && <em>{data.current}</em>}
+            </div>
+            <div className="folder-list">
+              {filtered.map((branch) => (
+                <button className={`folder-row branch-row ${branch.name === selectedBranch ? "selected" : ""}`} key={branch.name} onClick={() => void choose(branch.name)}>
+                  <GitBranch size={14} />
+                  <span><strong>{branch.name}</strong><small>{branch.current ? "current checkout" : branch.remote ? "remote branch" : "local branch"}</small></span>
+                  {branch.current && <em>current</em>}
+                  {branch.name === selectedBranch ? <Check size={14} /> : <ChevronRight size={14} />}
+                </button>
+              ))}
+              {data && filtered.length === 0 && <div className="folder-empty">No matching branches.</div>}
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function EmptyIssues() {
   return (
     <div className="issue-empty">
@@ -475,6 +599,7 @@ function NewRunView({
   const [error, setError] = useState<string | null>(null);
   const [browseOpen, setBrowseOpen] = useState(false);
   const [nativeBrowsing, setNativeBrowsing] = useState(false);
+  const [branchOpen, setBranchOpen] = useState(false);
 
   const providerModels = options.providers.find((p) => p.id === form.provider)?.models ?? [form.model];
   const branchTarget = form.newBranch ? form.branchName : form.branch;
@@ -538,7 +663,10 @@ function NewRunView({
                   <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
                 </div>
               </div>
-              <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
+              <div className="field-with-action branch-field-with-action">
+                <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
+                <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
+              </div>
             </div>
             <label className="branch-toggle">
               <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
@@ -615,6 +743,14 @@ function NewRunView({
           initialPath={form.repoPath}
           onClose={() => setBrowseOpen(false)}
           onChoose={(repoPath) => patch({ repoPath })}
+        />
+      )}
+      {branchOpen && (
+        <BranchPickerModal
+          repoPath={form.repoPath}
+          selectedBranch={form.branch}
+          onClose={() => setBranchOpen(false)}
+          onChoose={(branch) => patch({ branch })}
         />
       )}
     </section>

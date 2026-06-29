@@ -23,6 +23,7 @@ import type { Conversation, Event } from "@automations/core";
 export const STATE_DIR = process.env.AUTOMATIONS_STATE_DIR ?? join(process.cwd(), ".automations-state");
 const CONV_DIR = join(STATE_DIR, "conversations");
 const LOCAL_RECENTS_FILE = join(STATE_DIR, "local-recents.json");
+const BRANCH_RECENTS_FILE = join(STATE_DIR, "branch-recents.json");
 
 export function conversationDir(id: string): string {
   return join(CONV_DIR, id);
@@ -116,4 +117,46 @@ export function rememberLocalRecent(path: string): LocalRecent[] {
   const next = [{ path: normalized, selectedAt: now }, ...listLocalRecents().filter((item) => item.path !== normalized)].slice(0, 12);
   atomicWrite(LOCAL_RECENTS_FILE, JSON.stringify(next, null, 2));
   return next;
+}
+
+// ───────────────────────────── branch recents ─────────────────────────────
+
+export interface BranchRecent {
+  repoPath: string;
+  branch: string;
+  selectedAt: string;
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\/+$/, "") || "/";
+}
+
+export function listBranchRecents(repoPath: string): BranchRecent[] {
+  const normalized = normalizePath(repoPath);
+  const recents = readJSON<BranchRecent[]>(BRANCH_RECENTS_FILE);
+  if (!Array.isArray(recents)) return [];
+  return recents
+    .filter(
+      (item): item is BranchRecent =>
+        typeof item?.repoPath === "string" &&
+        normalizePath(item.repoPath) === normalized &&
+        typeof item?.branch === "string" &&
+        typeof item?.selectedAt === "string",
+    )
+    .sort((a, b) => (a.selectedAt < b.selectedAt ? 1 : -1))
+    .slice(0, 12);
+}
+
+export function rememberBranchRecent(repoPath: string, branch: string): BranchRecent[] {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const normalized = normalizePath(repoPath);
+  const existing = readJSON<BranchRecent[]>(BRANCH_RECENTS_FILE);
+  const all = Array.isArray(existing) ? existing : [];
+  const now = new Date().toISOString();
+  const next = [
+    { repoPath: normalized, branch, selectedAt: now },
+    ...all.filter((item) => !(normalizePath(item.repoPath) === normalized && item.branch === branch)),
+  ].slice(0, 100);
+  atomicWrite(BRANCH_RECENTS_FILE, JSON.stringify(next, null, 2));
+  return listBranchRecents(normalized);
 }

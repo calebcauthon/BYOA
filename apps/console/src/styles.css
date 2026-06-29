@@ -419,6 +419,13 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
   color: var(--text-3);
   cursor: default;
 }
+.branch-field-with-action {
+  grid-template-columns: minmax(0, 1fr) 38px;
+}
+.branch-picker-button {
+  border-left: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -576,6 +583,10 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
 }
 .folder-row.git {
   background: color-mix(in oklch, var(--accent-soft), transparent 72%);
+}
+.folder-row.selected,
+.branch-row.selected {
+  background: var(--accent-soft);
 }
 .folder-row span {
   display: grid;
