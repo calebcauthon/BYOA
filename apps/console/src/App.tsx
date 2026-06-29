@@ -143,6 +143,13 @@ interface LocalBrowsePayload {
   recents: LocalRecent[];
 }
 
+interface NativeFolderPayload {
+  path?: string;
+  recents?: LocalRecent[];
+  cancelled?: boolean;
+  error?: string;
+}
+
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") ?? "";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -467,6 +474,7 @@ function NewRunView({
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browseOpen, setBrowseOpen] = useState(false);
+  const [nativeBrowsing, setNativeBrowsing] = useState(false);
 
   const providerModels = options.providers.find((p) => p.id === form.provider)?.models ?? [form.model];
   const branchTarget = form.newBranch ? form.branchName : form.branch;
@@ -482,6 +490,28 @@ function NewRunView({
       setError(String(err));
     } finally {
       setLaunching(false);
+    }
+  };
+
+  const chooseNativeFolder = async () => {
+    setNativeBrowsing(true);
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/local/choose-folder`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: form.repoPath }),
+      });
+      const body = (await response.json()) as NativeFolderPayload;
+      if (!response.ok) {
+        if (body.cancelled) return;
+        throw new Error(body.error ?? `${response.status} ${response.statusText}`);
+      }
+      if (body.path) patch({ repoPath: body.path });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setNativeBrowsing(false);
     }
   };
 
@@ -503,7 +533,10 @@ function NewRunView({
             <div className="field-grid target-fields">
               <div className="field-with-action">
                 <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
-                <button className="browse-button" onClick={() => setBrowseOpen(true)}><FolderGit2 size={13} /> Browse</button>
+                <div className="browse-split">
+                  <button className="browse-button" disabled={nativeBrowsing} onClick={() => void chooseNativeFolder()}><FolderGit2 size={13} /> {nativeBrowsing ? "Choosing…" : "Browse"}</button>
+                  <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
+                </div>
               </div>
               <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
             </div>

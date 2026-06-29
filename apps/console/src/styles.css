@@ -381,6 +381,10 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
+.browse-split {
+  display: grid;
+  grid-template-columns: auto 34px;
+}
 .browse-button {
   min-width: 86px;
   display: flex;
@@ -393,10 +397,27 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
   color: var(--text-2);
   font-size: 9px;
   cursor: pointer;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
-.browse-button:hover {
+.browse-menu-button {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-left: 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: var(--surface);
+  color: var(--text-3);
+  cursor: pointer;
+}
+.browse-button:hover,
+.browse-menu-button:hover {
   background: var(--surface-raised);
   border-color: oklch(0.39 0.012 142);
+}
+.browse-button:disabled {
+  color: var(--text-3);
+  cursor: default;
 }
 .modal-backdrop {
   position: fixed;
@@ -605,6 +626,7 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
   .folder-path-row { grid-template-columns: 1fr; }
   .field-with-action { grid-template-columns: 1fr; }
   .browse-button { min-height: 38px; }
+  .browse-split { grid-template-columns: 1fr 38px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -13,6 +13,8 @@ import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, normalize, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   createConversation,
   list,
@@ -25,6 +27,7 @@ import { getConversation, listLocalRecents, rememberLocalRecent } from "../state
 import type { Target } from "@automations/core";
 
 const CONSOLE_DIST = process.env.AUTOMATIONS_CONSOLE_DIST ?? join(process.cwd(), "apps", "console", "dist");
+const execFileAsync = promisify(execFile);
 
 function send(res: ServerResponse, status: number, body: unknown): void {
   const data = JSON.stringify(body, null, 2);
@@ -136,6 +139,23 @@ function browseLocal(pathParam: string | null): Record<string, unknown> {
   };
 }
 
+function appleScriptString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+async function chooseNativeFolder(startPath?: string): Promise<string> {
+  const fallback = homedir();
+  const requested = startPath && startPath.trim() ? resolve(startPath.replace(/^~(?=\/|$)/, homedir())) : fallback;
+  const base = safeStat(requested) ? requested : fallback;
+  const script = [
+    `set defaultFolder to POSIX file ${appleScriptString(base)} as alias`,
+    'set chosenFolder to choose folder with prompt "Choose a local checkout" default location defaultFolder',
+    "POSIX path of chosenFolder",
+  ];
+  const { stdout } = await execFileAsync("osascript", script.flatMap((line) => ["-e", line]), { timeout: 120_000 });
+  return resolve(stdout.trim());
+}
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (req.method === "OPTIONS") {
@@ -181,6 +201,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const path = typeof body.path === "string" ? resolve(body.path.replace(/^~(?=\/|$)/, homedir())) : "";
       if (!path || !safeStat(path)) return send(res, 400, { error: "path must be a readable directory" });
       return send(res, 200, { recents: rememberLocalRecent(path) });
+    }
+  }
+  if (parts[0] === "local" && parts[1] === "choose-folder" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const chosen = await chooseNativeFolder(typeof body.path === "string" ? body.path : undefined);
+      if (!safeStat(chosen)) return send(res, 400, { error: "chosen path is not a readable directory" });
+      return send(res, 200, { path: chosen, recents: rememberLocalRecent(chosen) });
+    } catch (err) {
+      const message = String(err);
+      if (message.includes("User canceled")) return send(res, 400, { cancelled: true, error: "folder selection cancelled" });
+      return send(res, 500, { error: `native folder picker failed: ${message}` });
     }
   }
 
