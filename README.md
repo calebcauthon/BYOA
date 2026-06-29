@@ -62,5 +62,12 @@ in the `out` dir as one source-tagged JSONL per source (`agent`, `backend`,
 
 ```bash
 npm install      # links the workspace packages
+make dev         # orchestrator on :7700, Vite console on :5173
 npm run typecheck
+```
+
+`make dev` accepts overrides:
+
+```bash
+PORT=7701 CONSOLE_PORT=5174 AUTOMATIONS_STATE_DIR=/tmp/automations-state make dev
 ```
