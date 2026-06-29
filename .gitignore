@@ -7,3 +7,6 @@ secrets.yaml
 
 # Local durable state the orchestrator owns at runtime (see docs/architecture.md §3.2)
 .automations-state/
+
+# Editor/agent tooling state
+.serena/
