@@ -133,7 +133,8 @@ opens a draft PR for it.
 
 **M4 — Console.**
 Vite/React app against the M2/M3 API: run registry, launch surface, streaming
-Conversation timeline, lightbox. Exit criteria: launch + watch a run without
+Conversation timeline, lightbox. See [`m4-console-design.md`](./m4-console-design.md)
+for the concrete product/API design. Exit criteria: launch + watch a run without
 touching the terminal.
 
 **M5 — Workflow engine + graders + triggers.**
