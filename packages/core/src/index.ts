@@ -224,7 +224,9 @@ export type EventType =
   | "backend_ready"
   | "agent_finished"
   | "session_finished"
-  | "session_failed";
+  | "session_failed"
+  | "published"
+  | "publish_failed";
 
 export interface Event {
   ts: string;

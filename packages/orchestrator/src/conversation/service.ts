@@ -8,8 +8,9 @@
  * directory so all logs land in one place (§3.2).
  */
 import { mkdirSync } from "node:fs";
-import { runSession } from "@automations/runner";
+import { runSession, SessionLog, writeTimeline } from "@automations/runner";
 import type {
+  AgentResult,
   AgentSession,
   AgentSessionSettings,
   Conversation,
@@ -17,6 +18,7 @@ import type {
   EventType,
   Target,
 } from "@automations/core";
+import { publish as ghPublish } from "../github/liaison.ts";
 import {
   appendEvent,
   getConversation,
@@ -71,6 +73,34 @@ export interface StartSessionInput {
   prompt?: string;
   persona?: string;
   task?: string;
+  /** after the session finishes, the orchestrator pushes + opens/updates the PR
+   *  and posts the agent's publish content (§4.4). Opt-in: outward + irreversible. */
+  publish?: boolean;
+}
+
+/** After a session finishes: the orchestrator (sole liaison) pushes the branch,
+ *  auto-creates/updates the PR from the agent's pr-description, posts comments.
+ *  Logs into the session's own log dir and refreshes its timeline. */
+async function runPublish(convId: string, conv: Conversation, sessionId: string, outDir: string, output: Record<string, unknown>): Promise<void> {
+  if (conv.target.kind !== "local") {
+    emit(convId, "publish_failed", sessionId, { reason: "publish only wired for local-checkout targets so far" });
+    return;
+  }
+  const result = output[Object.keys(output)[0] ?? ""] as AgentResult | undefined;
+  if (!result) {
+    emit(convId, "publish_failed", sessionId, { reason: "no agent result" });
+    return;
+  }
+  const log = new SessionLog(outDir, sessionId);
+  try {
+    const outcome = await ghPublish({ repoPath: conv.target.repoPath, branch: conv.target.branch, result }, log);
+    emit(convId, outcome.prUrl ? "published" : "publish_failed", sessionId, { ...outcome });
+  } catch (err) {
+    log.emit("orchestrator", "error", `publish failed: ${String(err)}`);
+    emit(convId, "publish_failed", sessionId, { error: String(err) });
+  } finally {
+    writeTimeline(outDir); // fold publish log lines into the chronological view
+  }
 }
 
 export function startSession(convId: string, input: StartSessionInput): { sessionId: string } {
@@ -94,7 +124,10 @@ export function startSession(convId: string, input: StartSessionInput): { sessio
   // terminal Event when it resolves. (Degrade-don't-die: a failure becomes an
   // event, never a crash — §2.6.)
   void runSession({ sessionId, settings, prompt, outDir })
-    .then((res) => emit(convId, "session_finished", sessionId, { output: res.output }))
+    .then(async (res) => {
+      emit(convId, "session_finished", sessionId, { output: res.output });
+      if (input.publish) await runPublish(convId, conv, sessionId, res.outDir, res.output);
+    })
     .catch((err) => emit(convId, "session_failed", sessionId, { error: String(err) }));
 
   return { sessionId };

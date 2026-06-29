@@ -24,6 +24,11 @@ import "./backends/daytona.ts";
 import "./providers/pi.ts";
 import "./providers/claude.ts";
 
+// Re-export so the orchestrator can append to a session's logs + refresh its
+// timeline (e.g. when the liaison publishes after the session finishes).
+export { SessionLog } from "./logging.ts";
+export { writeTimeline } from "./timeline.ts";
+
 export interface RunSessionInput {
   sessionId: string;
   settings: AgentSessionSettings;

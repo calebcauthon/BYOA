@@ -81,6 +81,76 @@ pressure. The console is a control surface, not a marketing page.
   editable from the console, but behind a tab — the operator launches and
   inspects far more often than they edit YAML.
 
+### 1.7 Console layout — Project scope + three panes
+
+The principles above (§1.1–§1.6) describe *how the console must feel*; this
+section pins the *concrete layout* v2 builds toward. It introduces one new
+object above the existing primitives — the **Project** — and assigns the three
+panes.
+
+**Project — the top-nav scope (new, sits above `Target`).** The whole console is
+scoped to one **Project** at a time, switched from a top-nav dropdown that pins
+most-recently-used Projects to the top. A Project is **one or more GitHub
+repos** plus the account that owns them: `Project { name, account, repos[] }`.
+Most Projects are a single repo; a Project MAY hold several so that related work
+(and, later, a single Conversation) can span repos. Switching Project re-scopes
+everything below it: the run registry, the issues column, the repo/branch
+autocomplete sources.
+
+- **Cross-repo coordination is explicitly out of scope for now.** A Project
+  *containing* multiple repos is in; repos *knowing about each other* (a shared
+  asset/manifest file, cross-repo context) is parked. To avoid a later retrofit
+  we keep the door open: the composer's repo field is **multi-select-capable
+  from day one**, and a Conversation MAY hold Agent Sessions against different
+  repos in its Project. We just don't design the awareness layer yet.
+- The top nav carries **only** Project / repo / account — the things that scope
+  *everything*. Per-launch settings (backend, model, branch, skills) are Agent
+  Session settings (§3.1) and live in the composer, never the top nav.
+
+**The three panes.** Five surfaces compete for space — registry, issues,
+composer, transcript, artifacts. They resolve into three panes by grouping on
+verb (navigate / act / inspect):
+
+```
+┌─ [▼ Project] · repo ▾ · account ───────────────────────────────────────┐
+├──────────────┬──────────────────────────────────────┬───────────────────┤
+│  RUNS        │  ┌ composer ──────────┐ ┌ issues ───┐ │  DETAIL /          │
+│ (registry)   │  │ repo ▾  backend ▾   │ │ #142     ▸│ │  ARTIFACTS         │
+│ ▸ #142 …     │  │ model ▾  branch ▾   │ │ #139     ▸│ │  diff · shots ·    │
+│ ▸ fix …      │  │ ▢ branch off default│ │ #131     ▸│ │  assembled prompt ·│
+│   ● running  │  │ skills:[browser][+] │ │[insta ↵]  │ │  logs              │
+│   ✓ ready    │  │ > prompt…       [↵] │ └───────────┘ │ (contextual to the │
+│   ⚠ stale    │  └─────────────────────┘               │  selected session) │
+│              │  ─────── transcript stream ────────    │                    │
+└──────────────┴──────────────────────────────────────┴───────────────────┘
+   LEFT = runs        MIDDLE: launch-mode ⇄ reading-mode      RIGHT = artifacts
+```
+
+- **Left — Runs registry only.** The §1.1 sidebar: every run in flight for the
+  current Project, with honest reconciled status. Always the task-switcher;
+  selecting a run never resets the other panes' scroll/composer state.
+- **Middle — the act pane, with two modes.** *Launch mode* (no run selected):
+  the composer and the **issues column** side by side. *Reading mode* (a run
+  selected from the left): the issues column yields and the middle becomes the
+  Conversation transcript spine (§1.4). The composer is the single launch
+  surface of §1.2.
+- **Right — Detail / Artifacts.** Contextual to the selected Agent Session:
+  diff, screenshots (inline + lightbox), the assembled prompt, logs (§1.3).
+
+**Issues are a first-class column (a manual Trigger in UI form).** The issues
+column lists the current repo's GitHub issues. **Insta-prompt:** clicking an
+issue fills the composer with `Target = repo + issue#`, a body templated to
+"resolve this" plus the issue link, and starts a **fresh Conversation**. This is
+the manual shape of the Trigger gap (§3.3) wearing a button.
+
+**Skills — a global library, opt-in per session.** Skills (e.g. the agent-browser
+skill) live in **one global library**, not scoped per Project. The composer
+shows a `skills:[…][+]` chip row; `[+]` opens the global picker; selections
+attach to that one Agent Session. A skill MAY imply a backend capability — the
+**browser skill implies a browser-capable backend**, so selecting it filters or
+warns on the backend dropdown rather than failing at runtime. (Mechanically a
+skill is an input to the session's Runtime, §3.1.)
+
 ---
 
 ## 2. Technical Principles
