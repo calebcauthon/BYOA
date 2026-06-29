@@ -779,6 +779,8 @@ function SessionCard({ session, index }: { session: AgentSession; index: number 
 }
 
 function LogEntryView({ entry }: { entry: TimelineEntry }) {
+  const [thinkingOpen, setThinkingOpen] = useState(true);
+
   if (entry.source === "orchestrator" || entry.source === "backend" || entry.source === "workflow") {
     return <OrchestratorEvent time={entry.rel} level={entry.level}>{entry.message}</OrchestratorEvent>;
   }
@@ -825,9 +827,11 @@ function LogEntryView({ entry }: { entry: TimelineEntry }) {
 
   if (kind.includes("thinking")) {
     return (
-      <div className="thinking">
-        <button><ChevronDown size={13} /> Thinking · {entry.rel}</button>
-        <p>{entry.message}</p>
+      <div className={`thinking ${thinkingOpen ? "open" : "closed"}`}>
+        <button aria-expanded={thinkingOpen} onClick={() => setThinkingOpen((open) => !open)}>
+          <ChevronDown size={13} /> Thinking · {entry.rel}
+        </button>
+        {thinkingOpen && <p>{entry.message}</p>}
       </div>
     );
   }

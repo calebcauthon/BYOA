@@ -231,6 +231,8 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
 .turn-label span { color: var(--text-3); font: 8px var(--mono); }
 .thinking { margin: 9px 0 18px; }
 .thinking button { border: 0; background: transparent; padding: 0; display: flex; align-items: center; gap: 5px; color: var(--text-3); font-size: 9px; cursor: pointer; }
+.thinking button svg { transition: transform .14s ease-out; }
+.thinking.closed button svg { transform: rotate(-90deg); }
 .thinking p { margin: 8px 0 0; padding-left: 18px; color: oklch(0.64 0.012 142); font-size: 11px; font-style: italic; line-height: 1.7; max-width: 70ch; }
 .thinking.compact { margin-top: 21px; }
 .tool-call { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; margin: 13px 0 18px; background: oklch(0.175 0.007 142); }
