@@ -29,7 +29,7 @@ export type Target =
 // Everything an Agent Session owns. See architecture.md §3.1.
 
 /** Where the session physically runs. A clean adapter boundary (runner/backends). */
-export type BackendKind = "local" | "container" | "sandbox";
+export type BackendKind = "local" | "container" | "daytona";
 
 /** The agent *program* / provider that drives the session — distinct from the
  *  model. pi is a coding agent; a subscription drives Claude/ChatGPT directly. */

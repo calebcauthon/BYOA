@@ -92,7 +92,7 @@ export function startSession(convId: string, input: StartSessionInput): { sessio
   conv.sessionIds.push(sessionId);
   conv.updatedAt = new Date().toISOString();
   saveConversation(conv);
-  emit(convId, "session_started", sessionId, { backend: settings.backend, provider: settings.provider });
+  emit(convId, "session_started", sessionId, { settings, prompt });
 
   // Publish runs as the runner's afterWork hook — with the LIVE backend, before
   // dispose — so the push comes from where the commits actually are (host for
@@ -144,13 +144,48 @@ export interface RenderedConversation {
 export function renderConversation(convId: string): RenderedConversation | null {
   const conversation = getConversation(convId);
   if (!conversation) return null;
-  const sessions = conversation.sessionIds
-    .map((sid) => readJSONFile<AgentSession>(sessionDir(convId, sid), "session.json"))
-    .filter((s): s is AgentSession => s !== null);
+  const events = readEvents(convId);
+  const started = new Map<string, Event>();
+  for (const event of events) {
+    if (event.type === "session_started" && event.sessionId) started.set(event.sessionId, event);
+  }
+  const terminal = new Map<string, Event>();
+  for (const event of events) {
+    if (
+      event.sessionId &&
+      (event.type === "session_finished" || event.type === "session_failed" || event.type === "published" || event.type === "publish_failed")
+    ) {
+      terminal.set(event.sessionId, event);
+    }
+  }
+  const sessions = conversation.sessionIds.map((sid) => {
+    const record = readJSONFile<AgentSession>(sessionDir(convId, sid), "session.json");
+    if (record) return { ...record, conversationId: convId };
+    const start = started.get(sid);
+    const settings = start?.data?.settings as AgentSession["settings"] | undefined;
+    const prompt = typeof start?.data?.prompt === "string" ? start.data.prompt : "";
+    const end = terminal.get(sid);
+    return {
+      id: sid,
+      conversationId: convId,
+      settings: settings ?? {
+        backend: "local",
+        target: conversation.target,
+        provider: "pi",
+        model: "unknown",
+        agent: "generic",
+      },
+      prompt: { persona: settings?.agent ?? "generic", task: prompt, assembled: prompt },
+      status: end?.type === "session_failed" || end?.type === "publish_failed" ? "failed" : end ? "done" : "running",
+      ...(start ? { startedAt: start.ts } : {}),
+      ...(end ? { finishedAt: end.ts } : {}),
+      ...(end?.data?.error ? { error: String(end.data.error) } : {}),
+    } satisfies AgentSession;
+  });
   return {
     conversation,
     sessions,
-    events: readEvents(convId),
+    events,
     timeline: buildTimeline(convId),
   };
 }

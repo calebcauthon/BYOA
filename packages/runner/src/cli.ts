@@ -10,7 +10,7 @@
  *
  * Spec shape (see SessionSpec):
  *   {
- *     "backend":  "local" | "container" | "sandbox",
+ *     "backend":  "local" | "container" | "daytona",
  *     "provider": "pi" | "claude-subscription" | "codex",
  *     "model":    "anthropic/claude-opus-4.8",
  *     "agent":    "generic",

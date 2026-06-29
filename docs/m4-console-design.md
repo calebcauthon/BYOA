@@ -281,7 +281,7 @@ GET /api/conversations/:id/artifacts/:artifactId
 
 ```json
 {
-  "backends": ["local", "container", "sandbox"],
+  "backends": ["local", "container", "daytona"],
   "providers": [
     { "id": "pi", "models": ["anthropic/claude-haiku-4.5"] },
     { "id": "claude-subscription", "models": ["sonnet", "opus"] }
