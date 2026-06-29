@@ -910,6 +910,12 @@ function ConversationView({
     return !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 56;
   }, []);
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const el = viewportRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
   const pauseFollowing = useCallback(() => setFollowing(false), []);
 
   useEffect(() => {
@@ -921,12 +927,12 @@ function ConversationView({
   }, [atLiveEdge]);
 
   useEffect(() => {
-    if (following) endRef.current?.scrollIntoView({ block: "end" });
-  }, [following, rendered.timeline.entries.length]);
+    if (following) scrollToBottom();
+  }, [following, rendered.timeline.entries.length, scrollToBottom]);
 
   const jumpToLatest = () => {
     setFollowing(true);
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    scrollToBottom("smooth");
   };
 
   const submitContinue = async () => {

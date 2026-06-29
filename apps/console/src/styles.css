@@ -197,7 +197,7 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
 .stop-button:hover { background: color-mix(in oklch, var(--danger), transparent 86%); }
 .stop-button:disabled { opacity: .55; cursor: default; }
 
-.transcript { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-color: var(--border) transparent; scrollbar-width: thin; scroll-padding-top: 32px; }
+.transcript { min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; scrollbar-color: var(--border) transparent; scrollbar-width: thin; scroll-padding-top: 32px; }
 .thread { width: min(760px, calc(100% - 64px)); margin: 0 auto; padding: 30px 0 96px; }
 .session-card { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); padding: 17px 18px 14px; scroll-margin-top: 24px; }
 .session-heading { display: flex; align-items: center; gap: 11px; }
