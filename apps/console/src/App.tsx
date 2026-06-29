@@ -778,6 +778,76 @@ function SessionCard({ session, index }: { session: AgentSession; index: number 
   );
 }
 
+function entryKind(entry: TimelineEntry): string {
+  return typeof entry.data?.kind === "string" ? entry.data.kind : "";
+}
+
+function isToolEntry(entry: TimelineEntry): boolean {
+  const kind = entryKind(entry);
+  return kind.includes("tool") || entry.message.startsWith("tool");
+}
+
+function toolName(entry: TimelineEntry): string {
+  const tool = entry.data?.tool;
+  if (typeof tool === "string" && tool.trim()) return tool;
+  return entry.message.replace(/^[→←]\s*/, "").trim() || "tool";
+}
+
+function toolDetail(entry: TimelineEntry): string {
+  const kind = entryKind(entry);
+  if (kind === "tool-call" || kind.includes("call")) {
+    const args = entry.data?.arguments ?? entry.data?.input;
+    if (args === undefined) return entry.message;
+    if (typeof args === "string") return args;
+    return JSON.stringify(args, null, 2);
+  }
+  const text = entry.data?.text ?? entry.data?.output ?? entry.data?.result;
+  if (typeof text === "string" && text.trim()) return text;
+  if (text !== undefined) return JSON.stringify(text, null, 2);
+  return entry.message;
+}
+
+function ToolEntryView({ entry }: { entry: TimelineEntry }) {
+  const [open, setOpen] = useState(false);
+  const kind = entryKind(entry);
+  const isResult = kind.includes("result") || entry.message.startsWith("←");
+  const detail = toolDetail(entry);
+
+  return (
+    <div className={`tool-call compact-tool ${open ? "open" : "closed"}`}>
+      <button className="tool-title tool-disclosure" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className="tool-icon"><Search size={13} /></span>
+        <span><strong>{toolName(entry)}</strong><small>{isResult ? "tool result" : "tool call"}</small></span>
+        <span className="tool-time">{entry.rel}</span>
+        <ChevronDown size={13} />
+      </button>
+      {open && <pre className="tool-detail">{detail}</pre>}
+    </div>
+  );
+}
+
+function WorkingGroup({ entries }: { entries: TimelineEntry[] }) {
+  const [open, setOpen] = useState(false);
+  const calls = entries.filter((entry) => entryKind(entry).includes("call")).length;
+  const results = entries.filter((entry) => entryKind(entry).includes("result")).length;
+  const tools = [...new Set(entries.map(toolName))].slice(0, 4).join(", ");
+
+  return (
+    <div className={`working-group ${open ? "open" : "closed"}`}>
+      <button className="working-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <ChevronDown size={13} />
+        <span><strong>Working</strong><small>{calls} calls · {results} results{tools ? ` · ${tools}` : ""}</small></span>
+        <em>{entries[0]?.rel}</em>
+      </button>
+      {open && (
+        <div className="working-items">
+          {entries.map((entry) => <ToolEntryView entry={entry} key={`${entry.ts}-${entry.message}-${entryKind(entry)}`} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LogEntryView({ entry }: { entry: TimelineEntry }) {
   const [thinkingOpen, setThinkingOpen] = useState(true);
 
@@ -798,19 +868,8 @@ function LogEntryView({ entry }: { entry: TimelineEntry }) {
     );
   }
 
-  const kind = typeof entry.data?.kind === "string" ? entry.data.kind : "";
-  if (kind.includes("tool") || entry.message.startsWith("tool")) {
-    return (
-      <div className="tool-call">
-        <div className="tool-title">
-          <span className="tool-icon"><Search size={13} /></span>
-          <span><strong>Tool</strong><small>{kind || entry.level}</small></span>
-          <span className="tool-time">{entry.rel}</span>
-        </div>
-        <code>{entry.message}</code>
-      </div>
-    );
-  }
+  const kind = entryKind(entry);
+  if (isToolEntry(entry)) return <ToolEntryView entry={entry} />;
 
   if (kind.includes("diff")) {
     return (
@@ -845,6 +904,16 @@ function TimelineForSession({ entries }: { entries: TimelineEntry[] }) {
   const main = entries.filter((entry) => entry.source === "agent" || entry.source === "workload");
   const firstInfra = infra.slice(0, 2);
   const hiddenInfra = infra.slice(2);
+  const mainGroups: Array<TimelineEntry | TimelineEntry[]> = [];
+  for (const entry of main) {
+    if (isToolEntry(entry)) {
+      const last = mainGroups.at(-1);
+      if (Array.isArray(last)) last.push(entry);
+      else mainGroups.push([entry]);
+    } else {
+      mainGroups.push(entry);
+    }
+  }
 
   return (
     <>
@@ -867,7 +936,11 @@ function TimelineForSession({ entries }: { entries: TimelineEntry[] }) {
         <div className="turn-rail"><span><Bot size={14} /></span><i /></div>
         <div className="turn-body">
           <div className="turn-label"><strong>Agent trace</strong><span>{main.length ? formatClock(main[0]?.ts) : "waiting"}</span></div>
-          {main.length ? main.map((entry) => <LogEntryView entry={entry} key={`${entry.ts}-${entry.message}`} />) : (
+          {mainGroups.length ? mainGroups.map((item, index) => (
+            Array.isArray(item)
+              ? <WorkingGroup entries={item} key={`working-${index}-${item[0]?.ts ?? ""}`} />
+              : <LogEntryView entry={item} key={`${item.ts}-${item.message}`} />
+          )) : (
             <div className="active-step">
               <span className="live-glyph"><Braces size={13} /></span>
               <span><strong>Waiting for transcript</strong><small>The session is accepted; logs will appear here as the runner emits them.</small></span>
