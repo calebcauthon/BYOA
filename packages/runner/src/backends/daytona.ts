@@ -20,7 +20,8 @@
  * This avoids holding one HTTP response open for a long run and gives the host
  * a real wall-clock timeout even when Daytona's command exitCode stays unset.
  */
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -44,6 +45,20 @@ const SCRATCH = "/agent-session";
 const SESSION_POLL_MS = 1_000;
 
 const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+
+const execFileAsync = promisify(execFile);
+
+// A GitHub token from the host's gh CLI, so the sandbox can clone private repos
+// (unauthenticated clones 404 as "Repository not found"). Empty if gh is absent
+// or signed out — public repos still clone without it.
+async function ghToken(): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("gh", ["auth", "token"], { timeout: 10_000 });
+    return stdout.trim();
+  } catch {
+    return "";
+  }
+}
 
 function runTar(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -167,8 +182,16 @@ class DaytonaBackend implements Backend {
       await this.must(`tar xzf /tmp/repo.tgz -C ${WORKDIR}`, log);
     } else {
       const url = `https://github.com/${settings.target.repo}.git`;
-      log.emit("backend", "info", `cloning ${url} (branch ${settings.target.branch}) → ${WORKDIR}`);
-      await this.sandbox.git.clone(url, WORKDIR, settings.target.branch);
+      const token = await ghToken();
+      log.emit("backend", "info", `cloning ${url} (branch ${settings.target.branch}) → ${WORKDIR}${token ? " (gh-authed)" : ""}`);
+      await this.sandbox.git.clone(
+        url,
+        WORKDIR,
+        settings.target.branch,
+        undefined,
+        token ? "x-access-token" : undefined,
+        token || undefined,
+      );
       // Optionally branch off the cloned base so the agent works on a fresh branch.
       if (settings.target.newBranch) {
         log.emit("backend", "info", `creating branch ${settings.target.newBranch} off ${settings.target.branch}`);

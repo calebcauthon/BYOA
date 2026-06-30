@@ -43,6 +43,8 @@ export interface PublishContext {
   /** working tree path INSIDE the backend (host path for local; /workspace for daytona) */
   workdir: string;
   branch: string;
+  /** PR base branch; defaults to the repo's default branch when omitted. */
+  base?: string;
   result: AgentResult;
 }
 
@@ -99,7 +101,11 @@ export async function publish(ctx: PublishContext, log: SessionLog): Promise<Pub
   }
 
   // 2) ensure a draft PR; description from the agent's pr-description
-  const base = (await host("gh", ["repo", "view", slug, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])).stdout || "master";
+  const base = ctx.base || (await host("gh", ["repo", "view", slug, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])).stdout || "master";
+  if (base === branch) {
+    log.emit("orchestrator", "info", `publish: pushed ${branch}; no PR (head equals base ${base} — enable "create a new branch" to open one)`);
+    return { pushed: true, commentsPosted: 0, skipped: "head-equals-base" };
+  }
   const desc = pubs(list, "pr-description")[0];
   const title = desc?.title || `agent: ${branch}`;
   const body = desc?.body || "_(no description provided by the agent)_";

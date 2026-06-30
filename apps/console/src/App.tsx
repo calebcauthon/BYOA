@@ -913,6 +913,11 @@ function NewRunView({
               ))}
               <button className="add-skill" onClick={() => setSkills((current) => current.includes("browser") ? current : [...current, "browser"])}><Plus size={11} /> Add skill</button>
             </div>
+            <label className="branch-toggle publish-toggle">
+              <input type="checkbox" checked={form.publish} onChange={(event) => patch({ publish: event.target.checked })} />
+              <span className="toggle-track"><i /></span>
+              <span><strong>Open a draft PR when done</strong><small>{isRemote ? "pushes the branch from the sandbox, opens a draft PR" : "pushes the branch & opens a draft PR"}</small></span>
+            </label>
           </section>
 
           <section className="config-block issues-panel">

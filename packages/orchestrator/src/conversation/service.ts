@@ -104,17 +104,22 @@ export function startSession(convId: string, input: StartSessionInput): { sessio
   let publishError: string | undefined;
   const afterWork: AfterWork | undefined = input.publish
     ? async (ctx) => {
-        if (conv.target.kind !== "local") {
-          publishError = "publish is only wired for local-checkout targets so far";
-          return;
-        }
         const result = ctx.output[ctx.settings.agent] as AgentResult | undefined;
         if (!result) {
           publishError = "no agent result to publish";
           return;
         }
+        // For remote we push the branch the agent actually worked on (the new
+        // branch if one was created, else the cloned branch) and open the PR
+        // against the cloned base. For local the target branch is the push branch.
+        const target = conv.target;
+        const branch = target.kind === "remote" ? target.newBranch ?? target.branch : target.branch;
+        const base = target.kind === "remote" ? target.branch : undefined;
         try {
-          outcome = await ghPublish({ backend: ctx.backend, workdir: ctx.workdir, branch: conv.target.branch, result }, ctx.log);
+          outcome = await ghPublish(
+            { backend: ctx.backend, workdir: ctx.workdir, branch, ...(base ? { base } : {}), result },
+            ctx.log,
+          );
         } catch (err) {
           ctx.log.emit("orchestrator", "error", `publish failed: ${String(err)}`);
           publishError = String(err);
