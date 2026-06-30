@@ -90,6 +90,10 @@ export interface Backend {
    * session ran (host fs for local; `docker exec` for a container).
    */
   readDir(dir: string, ext: string, log: SessionLog): Promise<BackendFile[]>;
+  /** Read a single file's raw bytes from the backend (binary-safe, unlike
+   *  readDir which is text). Used to pull published artifacts — e.g. a QA
+   *  screenshot — out of the backend before it is disposed. */
+  readBytes(path: string, log: SessionLog): Promise<Buffer>;
   /** tear down (or keep, for debugging) */
   dispose(log: SessionLog): Promise<void>;
 }

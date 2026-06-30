@@ -136,6 +136,10 @@ class LocalBackend implements Backend {
     return out;
   }
 
+  async readBytes(path: string, _log: SessionLog): Promise<Buffer> {
+    return readFileSync(path);
+  }
+
   async dispose(log: SessionLog): Promise<void> {
     log.emit("backend", "info", "local backend: nothing to dispose");
   }

@@ -60,7 +60,14 @@ interface AgentSession {
   startedAt?: string;
   finishedAt?: string;
   output?: Record<string, unknown>;
+  artifacts?: SessionArtifact[];
   error?: string;
+}
+
+interface SessionArtifact {
+  kind: "image";
+  name: string;
+  caption?: string;
 }
 
 interface Conversation {
@@ -120,6 +127,7 @@ interface LaunchForm {
   agent: string;
   prompt: string;
   publish: boolean;
+  qaReview: boolean;
 }
 
 interface LocalRecent {
@@ -285,6 +293,23 @@ const PUBLISH_SKIP_LABEL: Record<string, string> = {
   "push-failed": "push failed",
   "pr-failed": "PR creation failed",
 };
+
+function SessionArtifacts({ conversationId, sessionId, artifacts }: { conversationId: string; sessionId: string; artifacts: SessionArtifact[] }) {
+  if (!artifacts.length) return null;
+  return (
+    <div className="artifact-strip">
+      {artifacts.map((artifact) => {
+        const src = `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifact.name)}`;
+        return (
+          <figure className="artifact-card" key={artifact.name}>
+            <a href={src} target="_blank" rel="noreferrer"><img src={src} alt={artifact.caption ?? artifact.name} loading="lazy" /></a>
+            {artifact.caption && <figcaption>{artifact.caption}</figcaption>}
+          </figure>
+        );
+      })}
+    </div>
+  );
+}
 
 function PublishCard({ event }: { event: EventRecord }) {
   const data = event.data ?? {};
@@ -793,6 +818,7 @@ function NewRunView({
     agent: "generic",
     prompt: "",
     publish: true,
+    qaReview: false,
     ...initial,
   }));
   const [skills, setSkills] = useState(["browser"]);
@@ -911,7 +937,7 @@ function NewRunView({
           </section>
 
           <section className="config-block">
-            <div className="config-block-head"><h3>Target</h3><p>Where the work should land.</p></div>
+            <div className="config-block-head"><h3>Code</h3><p>Where the work should land.</p></div>
             <div className="target-kind-switch" role="tablist" aria-label="Target kind">
               <button role="tab" aria-selected={!isRemote} className={!isRemote ? "active" : ""} onClick={() => chooseTargetKind("local")}><FolderGit2 size={13} /> Local</button>
               <button role="tab" aria-selected={isRemote} className={isRemote ? "active" : ""} onClick={() => chooseTargetKind("remote")}><Github size={13} /> GitHub</button>
@@ -944,7 +970,7 @@ function NewRunView({
           </section>
 
           <section className="config-block">
-            <div className="config-block-head"><h3>Agent session</h3><p>How and where the agent runs.</p></div>
+            <div className="config-block-head"><h3>Agent</h3><p>How and where the agent runs.</p></div>
             <div className="field-grid runtime-fields">
               <FieldSelect label="Provider" value={form.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => patch({ provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? form.model })} icon={<Bot size={14} />} />
               <FieldSelect label="Model" value={form.model} options={providerModels} onChange={(model) => patch({ model })} icon={<Bot size={14} />} />
@@ -958,6 +984,15 @@ function NewRunView({
               ))}
               <button className="add-skill" onClick={() => setSkills((current) => current.includes("browser") ? current : [...current, "browser"])}><Plus size={11} /> Add skill</button>
             </div>
+          </section>
+
+          <section className="config-block">
+            <div className="config-block-head"><h3>QA review</h3><p>Screenshot the feature after the run.</p></div>
+            <label className="branch-toggle publish-toggle">
+              <input type="checkbox" checked={form.qaReview} onChange={(event) => patch({ qaReview: event.target.checked })} />
+              <span className="toggle-track"><i /></span>
+              <span><strong>Run QA review</strong><small>a QA agent screenshots the feature and posts one image</small></span>
+            </label>
           </section>
 
           <section className="config-block issues-panel">
@@ -1345,6 +1380,7 @@ function ConversationView({
             <div className="session-block" key={session.id}>
               <SessionCard session={session} index={index} entries={entriesBySession.get(session.id) ?? []} />
               <TimelineForSession entries={entriesBySession.get(session.id) ?? []} prompt={session.prompt?.task || session.prompt?.assembled || ""} label={providerLabel(session.settings.provider)} />
+              {session.artifacts?.length ? <SessionArtifacts conversationId={rendered.conversation.id} sessionId={session.id} artifacts={session.artifacts} /> : null}
               {(() => { const pub = publishEventFor(rendered.events, session.id); return pub ? <PublishCard event={pub} /> : null; })()}
             </div>
           )) : (
@@ -1506,6 +1542,7 @@ function App() {
         },
         task: form.prompt,
         publish: form.publish,
+        qaReview: form.qaReview,
       }),
     });
     await loadConversations();

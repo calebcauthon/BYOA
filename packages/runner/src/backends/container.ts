@@ -187,6 +187,16 @@ class ContainerBackend implements Backend {
     return out;
   }
 
+  async readBytes(path: string, _log: SessionLog): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const child = spawn("docker", ["exec", this.containerId, "cat", path]);
+      const chunks: Buffer[] = [];
+      child.stdout.on("data", (d: Buffer) => chunks.push(d));
+      child.on("error", reject);
+      child.on("close", (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`docker exec cat ${path} exited ${code}`))));
+    });
+  }
+
   async dispose(log: SessionLog): Promise<void> {
     if (!this.containerId) return;
     if (process.env.AUTOMATIONS_KEEP_CONTAINER) {

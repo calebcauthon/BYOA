@@ -76,14 +76,27 @@ export interface StartSessionInput {
   /** after the session finishes, the orchestrator pushes + opens/updates the PR
    *  and posts the agent's publish content (§4.4). Opt-in: outward + irreversible. */
   publish?: boolean;
+  /** after a successful coding session, auto-start a QA session that screenshots
+   *  the feature and publishes a single image. Opt-in. */
+  qaReview?: boolean;
 }
 
 export function startSession(convId: string, input: StartSessionInput): { sessionId: string } {
   const conv = getConversation(convId);
   if (!conv) throw new Error(`unknown conversation ${convId}`);
+  return launchSession(convId, input, conv.target);
+}
+
+// Shared session launcher. `target` is the checkout this session runs against —
+// usually the conversation's, but the chained QA session overrides it to clone
+// the branch the coding agent just pushed. A QA session is an ordinary session:
+// same agent, same settings — only the prompt (and its target) differ.
+function launchSession(convId: string, input: StartSessionInput, target: Target): { sessionId: string } {
+  const conv = getConversation(convId);
+  if (!conv) throw new Error(`unknown conversation ${convId}`);
 
   const sessionId = id("sess");
-  const settings: AgentSessionSettings = { ...input.settings, target: conv.target };
+  const settings: AgentSessionSettings = { ...input.settings, target };
   const prompt =
     input.prompt ?? assemble({ persona: input.persona, task: input.task ?? "", carryContext: input.settings.carryContext });
   const outDir = sessionDir(convId, sessionId);
@@ -132,15 +145,58 @@ export function startSession(convId: string, input: StartSessionInput): { sessio
   void runSession({ sessionId, settings, prompt, outDir, ...(afterWork ? { afterWork } : {}) })
     .then((res) => {
       emit(convId, "session_finished", sessionId, { output: res.output });
-      if (!input.publish) return;
-      // A successful push surfaces as "published" even when no PR was opened
-      // (e.g. head==base) so the console can show the branch that landed.
-      if (outcome?.pushed) emit(convId, "published", sessionId, { ...outcome, ...(publishBranch ? { branch: publishBranch } : {}) });
-      else emit(convId, "publish_failed", sessionId, outcome ? { ...outcome, ...(publishBranch ? { branch: publishBranch } : {}) } : { error: publishError ?? "unknown" });
+      if (input.publish) {
+        // A successful push surfaces as "published" even when no PR was opened
+        // (e.g. head==base) so the console can show the branch that landed.
+        if (outcome?.pushed) emit(convId, "published", sessionId, { ...outcome, ...(publishBranch ? { branch: publishBranch } : {}) });
+        else emit(convId, "publish_failed", sessionId, outcome ? { ...outcome, ...(publishBranch ? { branch: publishBranch } : {}) } : { error: publishError ?? "unknown" });
+      }
+      // Chain a QA session once the coding work is on a branch we can clone. The
+      // QA session's own input carries no qaReview, so it never re-chains.
+      if (input.qaReview) {
+        chainQa(convId, input, { pushed: outcome?.pushed === true, branch: publishBranch });
+      }
     })
     .catch((err) => emit(convId, "session_failed", sessionId, { error: String(err) }));
 
   return { sessionId };
+}
+
+function qaPrompt(task: string, branch: string): string {
+  return [
+    `You are a QA reviewer. A change was just implemented and pushed to branch \`${branch}\`, already checked out in this workspace.`,
+    "",
+    "The change that was requested:",
+    task.trim() || "(no task description was provided)",
+    "",
+    "Your job is to verify the change visually:",
+    "- Work out how to run this app/feature in this repo and exercise the change above.",
+    "- Capture screenshots as you go.",
+    "- Produce a SINGLE image that best shows whether the feature works (crop, combine, or annotate if that tells the story better).",
+    "- Do NOT modify the application code.",
+    "",
+    "When finished, publish exactly ONE image via publish.json with a short caption stating whether it works.",
+  ].join("\n");
+}
+
+// Auto-start a QA session that clones the just-pushed branch and screenshots the
+// feature. Requires a remote target and a successful push (the coding sandbox is
+// already gone, so the work has to be reachable on the remote).
+function chainQa(convId: string, codingInput: StartSessionInput, push: { pushed: boolean; branch: string | undefined }): void {
+  const conv = getConversation(convId);
+  if (!conv) return;
+  if (conv.target.kind !== "remote") {
+    emit(convId, "qa_skipped", undefined, { reason: "QA review needs a GitHub target — it clones the pushed branch" });
+    return;
+  }
+  if (!push.pushed || !push.branch) {
+    emit(convId, "qa_skipped", undefined, { reason: "QA review needs a pushed branch — enable “Open a draft PR” and “Create a new branch”" });
+    return;
+  }
+  const target: Target = { kind: "remote", repo: conv.target.repo, branch: push.branch };
+  // Same agent and settings as the coding session — only the prompt (and the
+  // branch it clones) differ. "QA" is a prompt, not an agent type.
+  launchSession(convId, { settings: codingInput.settings, prompt: qaPrompt(codingInput.task ?? "", push.branch) }, target);
 }
 
 export interface RenderedConversation {

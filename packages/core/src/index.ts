@@ -97,7 +97,18 @@ export interface AgentSession {
   finishedAt?: string;
   /** structured output the agent wrote to the blackboard */
   output?: Blackboard;
+  /** files the runner pulled out of the (now-disposed) backend — e.g. a QA
+   *  screenshot the agent published. Served by the orchestrator from the session
+   *  dir; `name` is the filename under <session>/artifacts/. */
+  artifacts?: SessionArtifact[];
   error?: string;
+}
+
+export interface SessionArtifact {
+  kind: "image";
+  /** filename under <session-dir>/artifacts/ */
+  name: string;
+  caption?: string;
 }
 
 // ───────────────────────────── Conversation ─────────────────────────────
@@ -228,7 +239,8 @@ export type EventType =
   | "session_finished"
   | "session_failed"
   | "published"
-  | "publish_failed";
+  | "publish_failed"
+  | "qa_skipped";
 
 export interface Event {
   ts: string;

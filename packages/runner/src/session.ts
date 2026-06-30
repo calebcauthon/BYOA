@@ -9,9 +9,17 @@
  * It does one thing: resolve a backend + provider from the session's settings,
  * run the prompt, emit source-tagged logs + the blackboard output, and return.
  */
-import { join, relative, isAbsolute } from "node:path";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
-import type { AgentSession, AgentSessionSettings, Blackboard, SessionStatus } from "@automations/core";
+import { join, relative, isAbsolute, extname } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import type {
+  AgentResult,
+  AgentSession,
+  AgentSessionSettings,
+  Blackboard,
+  Publication,
+  SessionArtifact,
+  SessionStatus,
+} from "@automations/core";
 import { resolveBackend, type Backend } from "./backends/index.ts";
 import { resolveProvider } from "./providers/index.ts";
 import { SessionLog } from "./logging.ts";
@@ -64,6 +72,38 @@ export interface RunSessionResult {
   outDir: string;
   /** the derived, sorted, readable chronological log for this session */
   timelinePath: string;
+}
+
+// Copy every `image` the agent published from the live backend into
+// <outDir>/artifacts/. Best-effort: a missing/unreadable file is logged, never
+// fatal. Returns the manifest the session record carries for the console.
+async function extractArtifacts(
+  backend: Backend,
+  output: Blackboard,
+  agent: string,
+  outDir: string,
+  log: SessionLog,
+): Promise<SessionArtifact[]> {
+  const result = output[agent] as AgentResult | undefined;
+  const images = (result?.publish ?? []).filter((p): p is Extract<Publication, { kind: "image" }> => p.kind === "image");
+  if (images.length === 0) return [];
+  const dir = join(outDir, "artifacts");
+  mkdirSync(dir, { recursive: true });
+  const artifacts: SessionArtifact[] = [];
+  let i = 0;
+  for (const image of images) {
+    i += 1;
+    const name = `image-${String(i).padStart(2, "0")}${extname(image.path) || ".png"}`;
+    try {
+      const bytes = await backend.readBytes(image.path, log);
+      writeFileSync(join(dir, name), bytes);
+      artifacts.push({ kind: "image", name, ...(image.caption ? { caption: image.caption } : {}) });
+      log.emit("orchestrator", "info", `saved artifact ${name} (${bytes.length} bytes) from ${image.path}`);
+    } catch (err) {
+      log.emit("orchestrator", "warn", `could not read published image ${image.path}: ${String(err)}`);
+    }
+  }
+  return artifacts;
 }
 
 export async function runSession(input: RunSessionInput): Promise<RunSessionResult> {
@@ -158,7 +198,10 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
 
     output = await provider.run({ settings, backend, workdir, prompt: assembledPrompt, scratchDir, clockOffsetMs, log });
     log.emit("orchestrator", "info", `session ${sessionId} finished`);
-    writeRecord("done", { finishedAt: new Date().toISOString(), output });
+    // Pull published images out of the (about-to-be-disposed) backend into the
+    // session dir so the console can show them. Must run before dispose.
+    const artifacts = await extractArtifacts(backend, output, settings.agent, outDir, log);
+    writeRecord("done", { finishedAt: new Date().toISOString(), output, ...(artifacts.length ? { artifacts } : {}) });
 
     // Post-work, pre-dispose seam: the orchestrator publishes from the live
     // backend (e.g. push from where the commits actually are). Degrade-don't-die:

@@ -356,6 +356,10 @@ class DaytonaBackend implements Backend {
     return out;
   }
 
+  async readBytes(path: string, _log: SessionLog): Promise<Buffer> {
+    return this.box().fs.downloadFile(path);
+  }
+
   async dispose(log: SessionLog): Promise<void> {
     if (!this.sandbox || !this.daytona) return;
     if (process.env.AUTOMATIONS_KEEP_SANDBOX) {

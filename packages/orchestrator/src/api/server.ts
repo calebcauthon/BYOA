@@ -32,6 +32,7 @@ import {
   rememberBranchRecent,
   rememberGithubOrg,
   rememberLocalRecent,
+  sessionDir,
   setLastGithubOrg,
   writeReposCache,
 } from "../state/store.ts";
@@ -370,6 +371,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
     if (parts[2] === "sessions" && parts[3] && parts[4] === "stop" && method === "POST") {
       return send(res, 501, { error: "session stop is not implemented yet" });
+    }
+    // /:id/sessions/:sid/artifacts/:name — a file the runner pulled out of the
+    // backend (e.g. a QA screenshot). Served from the session dir; name is
+    // sanitized to its basename so it can't escape the artifacts folder.
+    if (parts[2] === "sessions" && parts[3] && parts[4] === "artifacts" && parts[5] && method === "GET") {
+      const name = basename(parts[5]);
+      const path = join(sessionDir(convId, parts[3]), "artifacts", name);
+      if (!existsSync(path)) return send(res, 404, { error: "not found" });
+      return sendFile(res, path);
     }
   }
 
