@@ -25,6 +25,10 @@ export function publishPath(scratchDir: string): string {
 export function publishProtocol(scratchDir: string): string {
   return [
     "\n\n---",
+    "## Committing your work (required)",
+    "When you are done making changes, COMMIT them with git: `git add -A && git commit -m \"<concise message>\"`.",
+    "This environment is ephemeral and only COMMITTED work is kept — uncommitted changes are discarded when the session ends, and the orchestrator only pushes commits. Committing is local; do NOT push or touch the remote — the orchestrator does that.",
+    "",
     "## Publishing (optional)",
     `If you have outward content to publish — a pull-request description, a PR/issue comment, screenshots — write it as JSON to exactly this path: ${publishPath(scratchDir)}`,
     "Schema:",

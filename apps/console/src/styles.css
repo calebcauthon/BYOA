@@ -236,6 +236,17 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
 .session-card:hover .session-copy { opacity: 1; }
 .session-copy:hover { color: var(--text); border-color: var(--border); background: var(--surface-raised); }
 .session-copy:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
+.publish-card { display: flex; align-items: center; gap: 11px; margin: 16px 0 2px 41px; padding: 11px 13px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in oklch, var(--accent-soft), transparent 55%); }
+.publish-card.benign { background: color-mix(in oklch, var(--surface), transparent 30%); }
+.publish-card.failed { background: color-mix(in oklch, var(--danger), transparent 92%); border-color: color-mix(in oklch, var(--danger), var(--border) 65%); }
+.publish-icon { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 7px; color: var(--accent); background: var(--accent-soft); }
+.publish-card.failed .publish-icon { color: oklch(0.79 0.08 27); background: color-mix(in oklch, var(--danger), transparent 86%); }
+.publish-body { min-width: 0; display: grid; gap: 2px; }
+.publish-body strong { font-size: 11px; }
+.publish-body small { color: var(--text-3); font: 9px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.publish-body code { color: var(--text-2); font: 9px var(--mono); }
+.publish-link { margin-left: auto; display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 9px; font-weight: 600; text-decoration: none; }
+.publish-link:hover { background: var(--surface-raised); border-color: oklch(0.39 0.012 142); }
 .session-heading { display: flex; align-items: center; gap: 11px; }
 .session-number { font: 10px var(--mono); color: var(--accent); width: 25px; height: 25px; display: grid; place-items: center; background: var(--accent-soft); border-radius: 6px; }
 .session-heading > div:nth-child(2) { display: grid; gap: 2px; }

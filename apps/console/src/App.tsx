@@ -271,6 +271,52 @@ function lastPublishUrl(events: EventRecord[]): string | undefined {
   return undefined;
 }
 
+function publishEventFor(events: EventRecord[], sessionId: string): EventRecord | undefined {
+  return [...events].reverse().find(
+    (e) => (e.type === "published" || e.type === "publish_failed") && e.sessionId === sessionId,
+  );
+}
+
+const PUBLISH_SKIP_LABEL: Record<string, string> = {
+  "head-equals-base": "no PR — head equals base",
+  "no-change": "agent made no changes",
+  "no-origin": "checkout has no GitHub origin",
+  "no-token": "no GitHub token (gh auth)",
+  "push-failed": "push failed",
+  "pr-failed": "PR creation failed",
+};
+
+function PublishCard({ event }: { event: EventRecord }) {
+  const data = event.data ?? {};
+  const pushed = data.pushed === true;
+  const branch = typeof data.branch === "string" ? data.branch : undefined;
+  const prUrl = typeof data.prUrl === "string" ? data.prUrl : undefined;
+  const comments = typeof data.commentsPosted === "number" ? data.commentsPosted : 0;
+  const skipped = typeof data.skipped === "string" ? data.skipped : undefined;
+  const error = typeof data.error === "string" ? data.error : undefined;
+  // A non-push with only a benign skip reason (no changes, etc.) is informational,
+  // not a failure — keep it muted rather than red.
+  const failed = !pushed && (Boolean(error) || skipped === "push-failed" || skipped === "pr-failed");
+  const benign = !pushed && !failed;
+
+  const detail = [
+    !failed && comments > 0 ? `${comments} comment${comments === 1 ? "" : "s"}` : "",
+    skipped ? PUBLISH_SKIP_LABEL[skipped] ?? skipped : "",
+    error ?? "",
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <div className={`publish-card${failed ? " failed" : ""}${benign ? " benign" : ""}`}>
+      <span className="publish-icon">{failed ? <CircleStop size={14} /> : <GitBranch size={14} />}</span>
+      <div className="publish-body">
+        <strong>{failed ? "Publish failed" : prUrl ? "Opened draft PR" : pushed ? "Pushed branch" : "Nothing published"}</strong>
+        <small>{branch && <code>{branch}</code>}{branch && detail ? " · " : ""}{detail}</small>
+      </div>
+      {prUrl && <a className="publish-link" href={prUrl} target="_blank" rel="noreferrer">View PR <ArrowUpRight size={12} /></a>}
+    </div>
+  );
+}
+
 function RunStatus({ state }: { state: RunState }) {
   return (
     <span className={`run-status ${state}`}>
@@ -746,7 +792,7 @@ function NewRunView({
     backend: "local",
     agent: "generic",
     prompt: "",
-    publish: false,
+    publish: true,
     ...initial,
   }));
   const [skills, setSkills] = useState(["browser"]);
@@ -846,6 +892,25 @@ function NewRunView({
 
         <aside className="config-panel">
           <section className="config-block">
+            <div className="config-block-head"><h3>Delivery</h3><p>Branch &amp; PR for the work.</p></div>
+            <label className="branch-toggle">
+              <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
+              <span className="toggle-track"><i /></span>
+              <span><strong>Create a new branch</strong><small>{form.newBranch ? form.branchName : `work on ${form.branch}`}</small></span>
+            </label>
+            {form.newBranch && (
+              <div className="field-grid single-field">
+                <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
+              </div>
+            )}
+            <label className="branch-toggle publish-toggle">
+              <input type="checkbox" checked={form.publish} onChange={(event) => patch({ publish: event.target.checked })} />
+              <span className="toggle-track"><i /></span>
+              <span><strong>Open a draft PR when done</strong><small>{isRemote ? "pushes the branch from the sandbox, opens a draft PR" : "pushes the branch & opens a draft PR"}</small></span>
+            </label>
+          </section>
+
+          <section className="config-block">
             <div className="config-block-head"><h3>Target</h3><p>Where the work should land.</p></div>
             <div className="target-kind-switch" role="tablist" aria-label="Target kind">
               <button role="tab" aria-selected={!isRemote} className={!isRemote ? "active" : ""} onClick={() => chooseTargetKind("local")}><FolderGit2 size={13} /> Local</button>
@@ -858,16 +923,6 @@ function NewRunView({
                   <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} placeholder="main" />
                   <FieldInput label="Issue (optional)" value={form.issue} onChange={(issue) => patch({ issue })} icon={<Link2 size={14} />} placeholder="123" />
                 </div>
-                <label className="branch-toggle">
-                  <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
-                  <span className="toggle-track"><i /></span>
-                  <span><strong>Create a new branch</strong><small>{form.newBranch ? form.branchName : `work on ${form.branch}`}</small></span>
-                </label>
-                {form.newBranch && (
-                  <div className="field-grid single-field">
-                    <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
-                  </div>
-                )}
               </>
             ) : (
               <>
@@ -884,16 +939,6 @@ function NewRunView({
                     <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
                   </div>
                 </div>
-                <label className="branch-toggle">
-                  <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
-                  <span className="toggle-track"><i /></span>
-                  <span><strong>Create a new branch</strong><small>{branchTarget}</small></span>
-                </label>
-                {form.newBranch && (
-                  <div className="field-grid single-field">
-                    <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
-                  </div>
-                )}
               </>
             )}
           </section>
@@ -913,11 +958,6 @@ function NewRunView({
               ))}
               <button className="add-skill" onClick={() => setSkills((current) => current.includes("browser") ? current : [...current, "browser"])}><Plus size={11} /> Add skill</button>
             </div>
-            <label className="branch-toggle publish-toggle">
-              <input type="checkbox" checked={form.publish} onChange={(event) => patch({ publish: event.target.checked })} />
-              <span className="toggle-track"><i /></span>
-              <span><strong>Open a draft PR when done</strong><small>{isRemote ? "pushes the branch from the sandbox, opens a draft PR" : "pushes the branch & opens a draft PR"}</small></span>
-            </label>
           </section>
 
           <section className="config-block issues-panel">
@@ -1305,6 +1345,7 @@ function ConversationView({
             <div className="session-block" key={session.id}>
               <SessionCard session={session} index={index} entries={entriesBySession.get(session.id) ?? []} />
               <TimelineForSession entries={entriesBySession.get(session.id) ?? []} prompt={session.prompt?.task || session.prompt?.assembled || ""} label={providerLabel(session.settings.provider)} />
+              {(() => { const pub = publishEventFor(rendered.events, session.id); return pub ? <PublishCard event={pub} /> : null; })()}
             </div>
           )) : (
             <div className="empty-state">

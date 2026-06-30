@@ -102,6 +102,7 @@ export function startSession(convId: string, input: StartSessionInput): { sessio
   // runner's own finally (which runs after this hook).
   let outcome: PublishOutcome | undefined;
   let publishError: string | undefined;
+  let publishBranch: string | undefined;
   const afterWork: AfterWork | undefined = input.publish
     ? async (ctx) => {
         const result = ctx.output[ctx.settings.agent] as AgentResult | undefined;
@@ -115,6 +116,7 @@ export function startSession(convId: string, input: StartSessionInput): { sessio
         const target = conv.target;
         const branch = target.kind === "remote" ? target.newBranch ?? target.branch : target.branch;
         const base = target.kind === "remote" ? target.branch : undefined;
+        publishBranch = branch;
         try {
           outcome = await ghPublish(
             { backend: ctx.backend, workdir: ctx.workdir, branch, ...(base ? { base } : {}), result },
@@ -131,8 +133,10 @@ export function startSession(convId: string, input: StartSessionInput): { sessio
     .then((res) => {
       emit(convId, "session_finished", sessionId, { output: res.output });
       if (!input.publish) return;
-      if (outcome?.prUrl) emit(convId, "published", sessionId, { ...outcome });
-      else emit(convId, "publish_failed", sessionId, outcome ? { ...outcome } : { error: publishError ?? "unknown" });
+      // A successful push surfaces as "published" even when no PR was opened
+      // (e.g. head==base) so the console can show the branch that landed.
+      if (outcome?.pushed) emit(convId, "published", sessionId, { ...outcome, ...(publishBranch ? { branch: publishBranch } : {}) });
+      else emit(convId, "publish_failed", sessionId, outcome ? { ...outcome, ...(publishBranch ? { branch: publishBranch } : {}) } : { error: publishError ?? "unknown" });
     })
     .catch((err) => emit(convId, "session_failed", sessionId, { error: String(err) }));
 
