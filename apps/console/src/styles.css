@@ -86,7 +86,7 @@ button:focus-visible, textarea:focus-visible, a:focus-visible {
 .new-run:hover { background: var(--surface-hover); }
 .new-run.active { border-color: color-mix(in oklch, var(--accent), var(--border) 55%); color: var(--accent); background: var(--accent-soft); }
 
-.launch-view { min-width: 0; min-height: 0; overflow-y: auto; background: var(--bg); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+.launch-view { min-width: 0; min-height: 0; overflow-y: auto; overflow-anchor: none; background: var(--bg); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
 .launch-head {
   min-height: 104px; display: flex; justify-content: space-between; align-items: flex-end;
   padding: 22px clamp(24px, 4vw, 52px) 20px; border-bottom: 1px solid var(--border-soft);
@@ -120,8 +120,8 @@ button:focus-visible, textarea:focus-visible, a:focus-visible {
 .field-button small, .field-label { color: var(--text-3); font-size: 8px; }
 .field-button strong { color: var(--text); font: 9px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .field-button > svg { color: var(--text-3); }
-.branch-toggle { width: max-content; display: flex; align-items: center; gap: 9px; margin: 11px 0 0 37px; cursor: pointer; }
-.branch-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.branch-toggle { position: relative; width: max-content; max-width: 100%; display: flex; align-items: center; gap: 9px; margin: 11px 0 0 37px; cursor: pointer; }
+.branch-toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .toggle-track { position: relative; width: 28px; height: 16px; border-radius: 999px; background: var(--border); transition: background .16s ease-out; }
 .toggle-track i { position: absolute; width: 12px; height: 12px; top: 2px; left: 2px; border-radius: 50%; background: var(--text-2); transition: transform .16s ease-out; }
 .branch-toggle input:checked + .toggle-track { background: oklch(0.42 0.075 153); }
