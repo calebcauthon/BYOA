@@ -188,6 +188,34 @@ async function fetchOrgRepos(org: string): Promise<string[]> {
   return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+interface GhIssue {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  labels: string[];
+  updatedAt: string;
+}
+
+// Open issues for a repo, as the gh-authed user sees them. Bodies included so the
+// console can fill the prompt without a second round-trip.
+async function fetchIssues(repo: string): Promise<GhIssue[]> {
+  const { stdout } = await execFileAsync(
+    "gh",
+    ["issue", "list", "--repo", repo, "--state", "open", "--limit", "50", "--json", "number,title,body,url,labels,updatedAt"],
+    { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
+  );
+  const raw = JSON.parse(stdout) as Array<Record<string, unknown>>;
+  return raw.map((i) => ({
+    number: Number(i.number),
+    title: String(i.title ?? ""),
+    body: typeof i.body === "string" ? i.body : "",
+    url: String(i.url ?? ""),
+    labels: Array.isArray(i.labels) ? i.labels.map((l) => String((l as { name?: unknown })?.name ?? "")).filter(Boolean) : [],
+    updatedAt: String(i.updatedAt ?? ""),
+  }));
+}
+
 function cleanBranch(raw: string): string | null {
   const branch = raw.trim().replace(/^remotes\//, "");
   if (!branch || branch.includes("HEAD ->")) return null;
@@ -337,6 +365,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     } catch (err) {
       if (cached) return send(res, 200, { org, repos: cached.repos, fetchedAt: cached.fetchedAt, cached: true, stale: true, error: String(err) });
       return send(res, 400, { error: `gh repo list failed: ${String(err)}` });
+    }
+  }
+  // /api/github/issues?repo=owner/name — open issues for a repo (live via gh).
+  if (parts[0] === "github" && parts[1] === "issues" && parts.length === 2 && method === "GET") {
+    const repo = (url.searchParams.get("repo") ?? "").trim();
+    if (!repo) return send(res, 400, { error: "repo is required" });
+    try {
+      return send(res, 200, { repo, issues: await fetchIssues(repo) });
+    } catch (err) {
+      return send(res, 400, { error: `gh issue list failed: ${String(err)}` });
     }
   }
 

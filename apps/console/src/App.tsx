@@ -644,13 +644,89 @@ function BranchPickerModal({
   );
 }
 
-function EmptyIssues() {
+interface GithubIssue {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  labels: string[];
+  updatedAt: string;
+}
+interface GithubIssuesPayload {
+  repo: string;
+  issues: GithubIssue[];
+}
+
+function issueAsPrompt(issue: GithubIssue): string {
+  return `${issue.title} (#${issue.number})\n\n${issue.body || ""}`.trim();
+}
+
+// Open issues for the selected repo, with click-to-expand, an external link, and
+// buttons to drop the issue into the prompt or copy it.
+function IssuesPanel({ repo, onUse }: { repo: string; onUse: (issue: GithubIssue) => void }) {
+  const [issues, setIssues] = useState<GithubIssue[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
+  const [copied, setCopied] = useState<number | null>(null);
+
+  const load = useCallback(() => {
+    if (!repo) { setIssues([]); return; }
+    setLoading(true);
+    setError(null);
+    api<GithubIssuesPayload>(`/api/github/issues?repo=${encodeURIComponent(repo)}`)
+      .then((payload) => setIssues(payload.issues))
+      .catch((err) => { setIssues([]); setError(String(err)); })
+      .finally(() => setLoading(false));
+  }, [repo]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const copy = async (issue: GithubIssue) => {
+    try {
+      await navigator.clipboard.writeText(`${issueAsPrompt(issue)}\n\n${issue.url}`);
+      setCopied(issue.number);
+      setTimeout(() => setCopied((n) => (n === issue.number ? null : n)), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+
   return (
-    <div className="issue-empty">
-      <Github size={15} />
-      <strong>Issue discovery is not wired yet.</strong>
-      <p>Use a local checkout path and paste the issue context into the prompt. The M4 API keeps this column real instead of backing it with fake data.</p>
-    </div>
+    <>
+      <div className="issues-head">
+        <div><span>Open issues</span><b>{issues.length}</b></div>
+        <button className="issues-refresh" onClick={load} disabled={loading}><RefreshCw size={12} className={loading ? "spin" : ""} /> {loading ? "Refreshing…" : "Refresh"}</button>
+      </div>
+      {error ? (
+        <p className="github-error">{error}</p>
+      ) : loading && issues.length === 0 ? (
+        <p>Loading issues…</p>
+      ) : issues.length === 0 ? (
+        <p>No open issues on {repo}.</p>
+      ) : (
+        <div className="issue-list">
+          {issues.map((issue) => (
+            <div className="issue-item" key={issue.number}>
+              <button className={`issue-row ${open === issue.number ? "selected" : ""}`} onClick={() => setOpen((n) => (n === issue.number ? null : issue.number))}>
+                <span className="issue-row-title"><b>#{issue.number}</b> {issue.title}</span>
+                {issue.labels.length > 0 && <span className="issue-row-labels">{issue.labels.slice(0, 3).map((l) => <em key={l}>{l}</em>)}</span>}
+              </button>
+              {open === issue.number && (
+                <div className="issue-detail">
+                  {issue.body && <p>{issue.body.slice(0, 700)}{issue.body.length > 700 ? "…" : ""}</p>}
+                  <div className="issue-actions">
+                    <button onClick={() => onUse(issue)}><ArrowDown size={12} /> Use as prompt</button>
+                    <button onClick={() => void copy(issue)}>{copied === issue.number ? <Check size={12} /> : <Copy size={12} />} Copy</button>
+                    <a href={issue.url} target="_blank" rel="noreferrer"><ArrowUpRight size={12} /> Open</a>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -996,12 +1072,17 @@ function NewRunView({
           </section>
 
           <section className="config-block issues-panel">
-            <div className="issues-head">
-              <div><span>Open issues</span><b>0</b></div>
-              <button aria-label="Search issues"><Search size={14} /></button>
-            </div>
-            <p>Issue discovery is an API concern; the column stays honest until it exists.</p>
-            <EmptyIssues />
+            {isRemote && form.repo ? (
+              <IssuesPanel
+                repo={form.repo}
+                onUse={(issue) => patch({ prompt: issueAsPrompt(issue), issue: String(issue.number), title: issue.title.slice(0, 80) || form.title })}
+              />
+            ) : (
+              <>
+                <div className="issues-head"><div><span>Open issues</span></div></div>
+                <p>Pick a GitHub repository to list its open issues.</p>
+              </>
+            )}
           </section>
         </aside>
       </div>
@@ -1590,6 +1671,7 @@ function App() {
             <span>Runs <b>{conversations.length}</b></span>
             <button className="icon-button" aria-label="Collapse runs"><PanelLeftClose size={15} /></button>
           </div>
+          <button className={`new-run ${view === "new" ? "active" : ""}`} onClick={newRun}><Play size={13} fill="currentColor" /> New run</button>
           <nav className="run-list" aria-label="Runs">
             {conversations.map((conv) => {
               const isSelected = selectedId === conv.id && view === "conversation";
@@ -1604,7 +1686,6 @@ function App() {
             })}
           </nav>
           {loadError && <div className="sidebar-error">{loadError}</div>}
-          <button className={`new-run ${view === "new" ? "active" : ""}`} onClick={newRun}><Play size={13} fill="currentColor" /> New run</button>
         </aside>
 
         {view === "new" ? (
