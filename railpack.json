@@ -5,17 +5,11 @@
     "node": "22"
   },
   "steps": {
-    "install": {
-      "inputs": [{ "local": true, "include": ["."] }],
-      "commands": ["npm ci"]
-    },
     "build": {
-      "inputs": [{ "step": "install" }],
-      "commands": ["npm run build -w @automations/console"]
+      "commands": ["...", "npm run build -w @automations/console"]
     }
   },
   "deploy": {
-    "inputs": [{ "step": "build", "include": ["."] }],
     "startCommand": "node packages/orchestrator/src/main.ts"
   }
 }
