@@ -1,31 +1,24 @@
 # Deploying to Railway
 
-This repo deploys as **two Railway services**, both built from the repo root
-(they share the npm workspace), each selected via a Railpack config file.
+Deploys as a **single service**. Railpack auto-detects `railpack.json` at the
+repo root — no extra environment variables required.
 
-## Service: `orchestrator` (Node API + serves nothing else)
+## What it does
 
-- **Config file** — set service variable `RAILPACK_CONFIG_FILE=railpack.orchestrator.json`
-- **Start command** — `node packages/orchestrator/src/main.ts` (defined in the config)
-- Binds the `PORT` Railway provides automatically.
-- CORS is already `*`, so the console may live on a different origin.
+1. `npm ci` — install the workspace.
+2. `npm run build -w @automations/console` — Vite-build the console UI into
+   `apps/console/dist` (this dir is gitignored, so it must be built here).
+3. Start `node packages/orchestrator/src/main.ts` — the Node API server, which
+   also serves the built console from `apps/console/dist`.
 
-## Service: `console` (static SPA)
+The orchestrator binds the `PORT` Railway provides automatically. Open the
+service's URL in a browser to get the console UI; the same origin answers the
+`/api/...` calls (the console defaults `VITE_API_BASE` to "" = same origin), so
+no cross-origin / API-URL configuration is needed.
 
-- **Config file** — set service variable `RAILPACK_CONFIG_FILE=railpack.console.json`
-- Builds with `npm run build -w @automations/console`, then serves `dist`
-  via `apps/console/serve.mjs` (dependency-free static server, SPA fallback,
-  binds `PORT`).
-- **Required build variable** — `VITE_API_BASE=https://<orchestrator-domain>`
-  This is baked in at **build time** (Vite). It must point at the orchestrator
-  service's public URL. If unset, the console calls its own origin and the API
-  requests 404.
+## Splitting into two services later
 
-## Notes
-
-- `RAILPACK_CONFIG_FILE` is the documented Railpack mechanism for selecting a
-  non-default config per service in a monorepo.
-- The orchestrator can also serve the console itself (single-service deploy)
-  via its built-in static handler — see `apps/console/dist` handling in
-  `packages/orchestrator/src/api/server.ts`. The two-service split here keeps
-  the static frontend on its own host.
+If you ever want the console hosted separately from the API, the orchestrator's
+CORS is already `*`. You'd build the console with `VITE_API_BASE` pointing at
+the orchestrator's public URL and serve `apps/console/dist` from its own static
+host. Not needed for the single-service deploy above.
