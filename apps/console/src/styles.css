@@ -826,3 +826,4 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
 .account-key { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
 .account-key span { display: grid; gap: 3px; }
 .account-logout { display: flex; align-items: center; gap: 7px; margin-top: 28px; border: 0; background: transparent; color: var(--danger); cursor: pointer; }
+.github-connect { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; text-decoration: none; }

@@ -735,6 +735,7 @@ function IssuesPanel({ repo, onUse }: { repo: string; onUse: (issue: GithubIssue
 interface GithubOrgsPayload {
   orgs: string[];
   lastOrg: string | null;
+  connectedOwners?: string[];
 }
 interface GithubReposPayload {
   org: string;
@@ -760,6 +761,7 @@ function GithubTargetPicker({
   onChange: (next: Partial<LaunchForm>) => void;
 }) {
   const [orgs, setOrgs] = useState<string[]>([]);
+  const [connectedOwners, setConnectedOwners] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
   const [newOrg, setNewOrg] = useState("");
   const [savingOrg, setSavingOrg] = useState(false);
@@ -774,6 +776,7 @@ function GithubTargetPicker({
       .then((payload) => {
         if (!active) return;
         setOrgs(payload.orgs);
+        setConnectedOwners(payload.connectedOwners ?? []);
         if (payload.orgs.length === 0) setAdding(true);
         if (!org) {
           // Hosted SSO can return several organizations and has no host-local
@@ -864,7 +867,14 @@ function GithubTargetPicker({
         </button>
       </div>
       {error ? (
-        <p className="config-note github-error">{error}</p>
+        <div>
+          <p className="config-note github-error">{error}</p>
+          {!connectedOwners.some((owner) => owner.toLowerCase() === org.toLowerCase()) ? (
+            <a className="secondary-button github-connect" href={`${API_BASE}/api/github/install`}>
+              <Github size={13} /> Connect repositories
+            </a>
+          ) : null}
+        </div>
       ) : fetchedAt ? (
         <p className="config-note">{repos.length} repos · daytona backend clones the target</p>
       ) : (

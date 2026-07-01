@@ -24,9 +24,9 @@ interface HostRun {
 }
 
 /** Run a host command (git/gh) capturing output. */
-function host(bin: string, args: string[], input?: string): Promise<HostRun> {
+function host(bin: string, args: string[], input?: string, env?: Record<string, string>): Promise<HostRun> {
   return new Promise((resolve) => {
-    const child = spawn(bin, args);
+    const child = spawn(bin, args, { env: { ...process.env, ...env } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
@@ -105,7 +105,8 @@ export async function publish(ctx: PublishContext, log: SessionLog): Promise<Pub
   }
 
   // 2) ensure a draft PR; description from the agent's pr-description
-  const base = ctx.base || (await host("gh", ["repo", "view", slug, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])).stdout || "master";
+  const ghEnv = { GH_TOKEN: token };
+  const base = ctx.base || (await host("gh", ["repo", "view", slug, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"], undefined, ghEnv)).stdout || "master";
   if (base === branch) {
     log.emit("orchestrator", "info", `publish: pushed ${branch}; no PR (head equals base ${base} — enable "create a new branch" to open one)`);
     return { pushed: true, commentsPosted: 0, skipped: "head-equals-base" };
@@ -115,16 +116,17 @@ export async function publish(ctx: PublishContext, log: SessionLog): Promise<Pub
   const body = desc?.body || "_(no description provided by the agent)_";
 
   let prUrl: string | undefined;
-  const existing = await host("gh", ["pr", "view", branch, "--repo", slug, "--json", "url", "-q", ".url"]);
+  const existing = await host("gh", ["pr", "view", branch, "--repo", slug, "--json", "url", "-q", ".url"], undefined, ghEnv);
   if (existing.code === 0 && existing.stdout) {
     prUrl = existing.stdout;
     log.emit("orchestrator", "info", `PR exists (${prUrl}); updating description`);
-    await host("gh", ["pr", "edit", branch, "--repo", slug, "--title", title, "--body-file", "-"], body);
+    await host("gh", ["pr", "edit", branch, "--repo", slug, "--title", title, "--body-file", "-"], body, ghEnv);
   } else {
     const create = await host(
       "gh",
       ["pr", "create", "--repo", slug, "--base", base, "--head", branch, "--draft", "--title", title, "--body-file", "-"],
       body,
+      ghEnv,
     );
     if (create.code !== 0) {
       log.emit("orchestrator", "error", `gh pr create failed: ${create.stderr.slice(-400)}`);
@@ -137,7 +139,7 @@ export async function publish(ctx: PublishContext, log: SessionLog): Promise<Pub
   // 3) post the agent-authored comments
   let commentsPosted = 0;
   for (const c of pubs(list, "comment")) {
-    const r = await host("gh", ["pr", "comment", branch, "--repo", slug, "--body-file", "-"], c.body);
+    const r = await host("gh", ["pr", "comment", branch, "--repo", slug, "--body-file", "-"], c.body, ghEnv);
     if (r.code === 0) commentsPosted++;
     else log.emit("orchestrator", "warn", `comment failed: ${r.stderr.slice(-300)}`);
   }

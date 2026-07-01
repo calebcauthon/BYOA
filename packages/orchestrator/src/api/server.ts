@@ -365,6 +365,60 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   ) {
     return send(res, 200, await identity.listGithubOrgs(principal.id));
   }
+  if (
+    identity instanceof HostedIdentity &&
+    parts[0] === "github" &&
+    parts[1] === "install" &&
+    method === "GET"
+  ) {
+    try {
+      return redirect(res, await identity.beginGithubInstall(principal.id));
+    } catch (err) {
+      return send(res, 503, { error: String(err) });
+    }
+  }
+  if (
+    identity instanceof HostedIdentity &&
+    parts[0] === "github" &&
+    parts[1] === "setup" &&
+    method === "GET"
+  ) {
+    try {
+      await identity.completeGithubInstall(principal.id, url);
+      return redirect(res, "/?github_installed=1");
+    } catch (err) {
+      return redirect(res, `/?github_error=${encodeURIComponent(String(err))}`);
+    }
+  }
+  if (
+    identity instanceof HostedIdentity &&
+    parts[0] === "github" &&
+    parts[1] === "repos" &&
+    method === "GET"
+  ) {
+    const org = (url.searchParams.get("org") ?? "").trim();
+    if (!org) return send(res, 400, { error: "org is required" });
+    try {
+      const repos = await identity.listGithubRepos(principal.id, org);
+      return send(res, 200, { org, repos, fetchedAt: new Date().toISOString(), cached: false });
+    } catch (err) {
+      return send(res, 409, { error: String(err), installationRequired: true });
+    }
+  }
+  if (
+    identity instanceof HostedIdentity &&
+    parts[0] === "github" &&
+    parts[1] === "issues" &&
+    method === "GET"
+  ) {
+    const repo = (url.searchParams.get("repo") ?? "").trim();
+    if (!repo) return send(res, 400, { error: "repo is required" });
+    try {
+      return send(res, 200, { repo, issues: await identity.listGithubIssues(principal.id, repo) });
+    } catch (err) {
+      return send(res, 409, { error: String(err), installationRequired: true });
+    }
+  }
   if (identity.kind === "hosted" && parts[0] === "github") {
     return send(res, 501, { error: "GitHub repository access requires the GitHub App installation phase" });
   }
@@ -511,8 +565,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         // Resolve the principal's credentials through the identity seam and pass
         // them into the run — never from the request body (secrets aren't
         // client-supplied). The principal is guaranteed by the gate above.
-        const credentials = await identity.resolveCredentials(principal);
-        return send(res, 202, startSession(principal.id, convId, body, credentials));
+        const conversation = getOwnedConversation(convId, principal.id);
+        if (!conversation) return send(res, 404, { error: "not found" });
+        const remoteRepo = conversation.target.kind === "remote" ? conversation.target.repo : undefined;
+        const credentials =
+          identity instanceof HostedIdentity && remoteRepo
+            ? await identity.resolveCredentialsForRepo(principal, remoteRepo)
+            : await identity.resolveCredentials(principal);
+        const refreshCredentials =
+          identity instanceof HostedIdentity && remoteRepo
+            ? () => identity.resolveCredentialsForRepo(principal, remoteRepo)
+            : undefined;
+        return send(res, 202, startSession(principal.id, convId, body, credentials, refreshCredentials));
       } catch (err) {
         if (err instanceof AtCapacityError) return send(res, 429, { error: err.message });
         return send(res, 400, { error: String(err) });

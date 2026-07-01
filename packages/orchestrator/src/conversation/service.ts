@@ -101,17 +101,30 @@ export interface StartSessionInput {
 // `credentials` are resolved by the caller's Identity adapter (never from the
 // request body — secrets must not be client-supplied) and threaded into the run
 // + the publish token. Omitted for callers that rely on host fallbacks.
-export function startSession(ownerUserId: string, convId: string, input: StartSessionInput, credentials?: Credentials): { sessionId: string } {
+export function startSession(
+  ownerUserId: string,
+  convId: string,
+  input: StartSessionInput,
+  credentials?: Credentials,
+  refreshCredentials?: () => Promise<Credentials>,
+): { sessionId: string } {
   const conv = getOwnedConversation(convId, ownerUserId);
   if (!conv) throw new Error(`unknown conversation ${convId}`);
-  return launchSession(ownerUserId, convId, input, conv.target, credentials);
+  return launchSession(ownerUserId, convId, input, conv.target, credentials, refreshCredentials);
 }
 
 // Shared session launcher. `target` is the checkout this session runs against —
 // usually the conversation's, but the chained QA session overrides it to clone
 // the branch the coding agent just pushed. A QA session is an ordinary session:
 // same agent, same settings — only the prompt (and its target) differ.
-function launchSession(ownerUserId: string, convId: string, input: StartSessionInput, target: Target, credentials?: Credentials): { sessionId: string } {
+function launchSession(
+  ownerUserId: string,
+  convId: string,
+  input: StartSessionInput,
+  target: Target,
+  credentials?: Credentials,
+  refreshCredentials?: () => Promise<Credentials>,
+): { sessionId: string } {
   const conv = getOwnedConversation(convId, ownerUserId);
   if (!conv) throw new Error(`unknown conversation ${convId}`);
 
@@ -156,8 +169,12 @@ function launchSession(ownerUserId: string, convId: string, input: StartSessionI
         const base = target.kind === "remote" ? target.branch : undefined;
         publishBranch = branch;
         try {
+          // GitHub App installation tokens last one hour. Refresh immediately
+          // before push/PR work so a long-running agent never publishes with
+          // the token snapshot used to clone at launch.
+          const publishCredentials = refreshCredentials ? await refreshCredentials() : credentials;
           outcome = await ghPublish(
-            { backend: ctx.backend, workdir: ctx.workdir, branch, ...(base ? { base } : {}), ...(credentials?.githubToken ? { token: credentials.githubToken } : {}), result },
+            { backend: ctx.backend, workdir: ctx.workdir, branch, ...(base ? { base } : {}), ...(publishCredentials?.githubToken ? { token: publishCredentials.githubToken } : {}), result },
             ctx.log,
           );
         } catch (err) {
@@ -192,7 +209,7 @@ function launchSession(ownerUserId: string, convId: string, input: StartSessionI
       // Chain a QA session once the coding work is on a branch we can clone. The
       // QA session's own input carries no qaReview, so it never re-chains.
       if (input.qaReview) {
-        chainQa(ownerUserId, convId, input, { pushed: outcome?.pushed === true, branch: publishBranch }, credentials);
+        chainQa(ownerUserId, convId, input, { pushed: outcome?.pushed === true, branch: publishBranch }, credentials, refreshCredentials);
       }
     })
     .catch((err) => {
@@ -223,7 +240,14 @@ function qaPrompt(task: string, branch: string): string {
 // Auto-start a QA session that clones the just-pushed branch and screenshots the
 // feature. Requires a remote target and a successful push (the coding sandbox is
 // already gone, so the work has to be reachable on the remote).
-function chainQa(ownerUserId: string, convId: string, codingInput: StartSessionInput, push: { pushed: boolean; branch: string | undefined }, credentials?: Credentials): void {
+function chainQa(
+  ownerUserId: string,
+  convId: string,
+  codingInput: StartSessionInput,
+  push: { pushed: boolean; branch: string | undefined },
+  credentials?: Credentials,
+  refreshCredentials?: () => Promise<Credentials>,
+): void {
   const conv = getOwnedConversation(convId, ownerUserId);
   if (!conv) return;
   if (conv.target.kind !== "remote") {
@@ -240,7 +264,7 @@ function chainQa(ownerUserId: string, convId: string, codingInput: StartSessionI
   // primary run's .then, so swallow a capacity rejection as qa_skipped rather than
   // letting it surface as a failure of the (already-finished) coding session.
   try {
-    launchSession(ownerUserId, convId, { settings: codingInput.settings, prompt: qaPrompt(codingInput.task ?? "", push.branch) }, target, credentials);
+    launchSession(ownerUserId, convId, { settings: codingInput.settings, prompt: qaPrompt(codingInput.task ?? "", push.branch) }, target, credentials, refreshCredentials);
   } catch (err) {
     if (err instanceof AtCapacityError) emit(convId, "qa_skipped", undefined, { reason: err.message });
     else throw err;

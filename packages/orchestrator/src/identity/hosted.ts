@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createSign, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Pool } from "pg";
 import type { Credentials } from "@automations/core";
@@ -117,6 +117,25 @@ export class HostedIdentity implements Identity {
         imported_at timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (user_id, github_org_id)
       );
+      CREATE TABLE IF NOT EXISTS github_install_flows (
+        state_hash text PRIMARY KEY,
+        user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at timestamptz NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS user_github_installations (
+        installation_id bigint NOT NULL,
+        user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        account_login text NOT NULL,
+        account_type text NOT NULL,
+        repository_selection text NOT NULL,
+        suspended_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, installation_id)
+      );
+      CREATE INDEX IF NOT EXISTS user_github_installations_account_idx
+        ON user_github_installations(user_id, lower(account_login));
       CREATE INDEX IF NOT EXISTS user_sessions_user_id_idx ON user_sessions(user_id);
       CREATE INDEX IF NOT EXISTS api_keys_user_id_idx ON api_keys(user_id);
     `);
@@ -160,6 +179,14 @@ export class HostedIdentity implements Identity {
 
   async resolveCredentials(_principal: Principal): Promise<Credentials> {
     return {};
+  }
+
+  async resolveCredentialsForRepo(principal: Principal, repo: string): Promise<Credentials> {
+    const owner = repo.split("/")[0]?.trim();
+    if (!owner) throw new Error("GitHub repository must be owner/name");
+    const installation = await this.installationForOwner(principal.id, owner);
+    if (!installation) throw new Error(`GitHub App is not installed for ${owner}`);
+    return { githubToken: await this.installationToken(installation.installationId) };
   }
 
   async sessionInfo(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -296,7 +323,7 @@ export class HostedIdentity implements Identity {
     return (result.rowCount ?? 0) > 0;
   }
 
-  async listGithubOrgs(userId: string): Promise<{ orgs: string[]; lastOrg: null }> {
+  async listGithubOrgs(userId: string): Promise<{ orgs: string[]; lastOrg: null; connectedOwners: string[] }> {
     const [organizations, account] = await Promise.all([
       this.pool.query(
         "SELECT login FROM user_github_orgs WHERE user_id=$1 ORDER BY lower(login)",
@@ -313,7 +340,107 @@ export class HostedIdentity implements Identity {
     if (typeof personalAccount === "string" && !orgs.includes(personalAccount)) {
       orgs.push(personalAccount);
     }
-    return { orgs, lastOrg: null };
+    const installations = await this.pool.query(
+      "SELECT account_login FROM user_github_installations WHERE user_id=$1 AND suspended_at IS NULL",
+      [userId],
+    );
+    return {
+      orgs,
+      lastOrg: null,
+      connectedOwners: installations.rows.map((row) => String(row.account_login)),
+    };
+  }
+
+  async beginGithubInstall(userId: string): Promise<string> {
+    await this.ready;
+    const slug = process.env.GITHUB_APP_SLUG?.trim();
+    if (!slug) throw new Error("GITHUB_APP_SLUG is not configured");
+    const state = randomToken();
+    await this.pool.query("DELETE FROM github_install_flows WHERE expires_at<=now()");
+    await this.pool.query(
+      "INSERT INTO github_install_flows(state_hash,user_id,expires_at) VALUES($1,$2,now()+interval '15 minutes')",
+      [sha256(state), userId],
+    );
+    return `https://github.com/apps/${encodeURIComponent(slug)}/installations/new?state=${encodeURIComponent(state)}`;
+  }
+
+  async completeGithubInstall(userId: string, url: URL): Promise<void> {
+    await this.ready;
+    const state = url.searchParams.get("state");
+    const rawInstallationId = url.searchParams.get("installation_id");
+    if (!state || !rawInstallationId || !/^\d+$/.test(rawInstallationId)) {
+      throw new Error("GitHub installation callback is missing state or installation_id");
+    }
+    const flow = await this.pool.query(
+      `DELETE FROM github_install_flows
+       WHERE state_hash=$1 AND user_id=$2 AND expires_at>now()
+       RETURNING user_id`,
+      [sha256(state), userId],
+    );
+    if (!flow.rowCount) throw new Error("GitHub installation flow is missing, expired, or already used");
+
+    const installation = await this.githubAppRequest<{
+      id: number;
+      account: { login: string; type: string };
+      repository_selection: string;
+      suspended_at: string | null;
+    }>(`/app/installations/${rawInstallationId}`, { auth: "app" });
+    const allowed = await this.pool.query(
+      `SELECT 1 FROM identity_links WHERE user_id=$1 AND provider='github' AND lower(provider_login)=lower($2)
+       UNION ALL
+       SELECT 1 FROM user_github_orgs WHERE user_id=$1 AND lower(login)=lower($2)
+       LIMIT 1`,
+      [userId, installation.account.login],
+    );
+    if (!allowed.rowCount) throw new Error(`GitHub installation account ${installation.account.login} is not linked to this user`);
+    await this.pool.query(
+      `INSERT INTO user_github_installations(
+         installation_id,user_id,account_login,account_type,repository_selection,suspended_at
+       ) VALUES($1,$2,$3,$4,$5,$6)
+       ON CONFLICT(user_id,installation_id) DO UPDATE SET
+         account_login=EXCLUDED.account_login,
+         account_type=EXCLUDED.account_type,repository_selection=EXCLUDED.repository_selection,
+         suspended_at=EXCLUDED.suspended_at,updated_at=now()`,
+      [
+        installation.id,
+        userId,
+        installation.account.login,
+        installation.account.type,
+        installation.repository_selection,
+        installation.suspended_at,
+      ],
+    );
+  }
+
+  async listGithubRepos(userId: string, owner: string): Promise<string[]> {
+    const installation = await this.installationForOwner(userId, owner);
+    if (!installation) throw new Error(`GitHub App is not installed for ${owner}`);
+    const token = await this.installationToken(installation.installationId);
+    const repositories: string[] = [];
+    for (let page = 1; ; page += 1) {
+      const result = await this.githubAppRequest<{
+        repositories: Array<{ full_name: string }>;
+      }>(`/installation/repositories?per_page=100&page=${page}`, { token });
+      repositories.push(...result.repositories.map((repo) => repo.full_name));
+      if (result.repositories.length < 100) break;
+    }
+    return repositories
+      .filter((repo) => repo.toLowerCase().startsWith(`${owner.toLowerCase()}/`))
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  async listGithubIssues(userId: string, repo: string): Promise<unknown[]> {
+    const owner = repo.split("/")[0] ?? "";
+    const installation = await this.installationForOwner(userId, owner);
+    if (!installation) throw new Error(`GitHub App is not installed for ${owner}`);
+    const token = await this.installationToken(installation.installationId);
+    const issues = await this.githubAppRequest<Array<Record<string, unknown>>>(
+      `/repos/${repo}/issues?state=open&per_page=100`,
+      { token },
+    );
+    return issues
+      .filter((issue) => !issue.pull_request)
+      .map((issue) => ({ number: issue.number, title: issue.title, url: issue.html_url }));
   }
 
   logStatus(write: (line: string) => void): void {
@@ -377,6 +504,56 @@ export class HostedIdentity implements Identity {
       organizations.push(...batch);
       if (batch.length < 100) return organizations;
     }
+  }
+
+  private async installationForOwner(userId: string, owner: string): Promise<{ installationId: string } | null> {
+    const result = await this.pool.query(
+      `SELECT installation_id::text FROM user_github_installations
+       WHERE user_id=$1 AND lower(account_login)=lower($2) AND suspended_at IS NULL
+       LIMIT 1`,
+      [userId, owner],
+    );
+    return result.rows[0]?.installation_id
+      ? { installationId: String(result.rows[0].installation_id) }
+      : null;
+  }
+
+  private appJwt(): string {
+    const appId = process.env.GITHUB_APP_ID?.trim();
+    const privateKey = process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, "\n").trim();
+    if (!appId || !privateKey) throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY are required");
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 540, iss: appId })).toString("base64url");
+    const input = `${header}.${payload}`;
+    const signature = createSign("RSA-SHA256").update(input).sign(privateKey).toString("base64url");
+    return `${input}.${signature}`;
+  }
+
+  private async githubAppRequest<T>(
+    path: string,
+    auth: { auth: "app" } | { token: string },
+    init: RequestInit = {},
+  ): Promise<T> {
+    const authorization = "auth" in auth ? `Bearer ${this.appJwt()}` : `Bearer ${auth.token}`;
+    return json<T>(`https://api.github.com${path}`, {
+      ...init,
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization,
+        "x-github-api-version": "2022-11-28",
+        ...(init.headers ?? {}),
+      },
+    });
+  }
+
+  private async installationToken(installationId: string): Promise<string> {
+    const result = await this.githubAppRequest<{ token: string }>(
+      `/app/installations/${installationId}/access_tokens`,
+      { auth: "app" },
+      { method: "POST" },
+    );
+    return result.token;
   }
 
   private async googleProfile(code: string, verifier: string) {
