@@ -16,6 +16,7 @@ import type {
   AgentSession,
   AgentSessionSettings,
   Blackboard,
+  Credentials,
   Publication,
   SessionArtifact,
   SessionStatus,
@@ -38,6 +39,34 @@ import "./providers/claude.ts";
 export { SessionLog } from "./logging.ts";
 export { writeTimeline } from "./timeline.ts";
 export type { Backend, ExecOpts, BackendFile } from "./backends/index.ts";
+// The orchestrator drives sandbox lifecycle safety from these: dispose live
+// backends on shutdown, and sweep orphans left by a prior crashed process.
+export { reapOrphanSandboxes } from "./backends/daytona.ts";
+
+// ─────────────────────── active-session registry ───────────────────────
+//
+// Every in-flight run's live backend, so a graceful shutdown can dispose the
+// sandboxes it stood up BEFORE the process exits (Railway sends SIGTERM on every
+// deploy). Without this, `void runSession(...)` abandons the promise on exit and
+// the sandbox leaks — billing until Daytona's own autoStop/autoDelete catches it.
+const activeSessions = new Map<string, { backend: Backend; log: SessionLog }>();
+
+/** How many runs currently hold a live backend (used for the concurrency cap). */
+export function activeSessionCount(): number {
+  return activeSessions.size;
+}
+
+/**
+ * Dispose every active run's backend. Called from the orchestrator's SIGTERM/
+ * SIGINT handler. dispose() is idempotent, so a run's own finally disposing the
+ * same backend moments later is harmless. Best-effort and never throws.
+ */
+export async function disposeActiveSessions(): Promise<number> {
+  const entries = [...activeSessions.values()];
+  activeSessions.clear();
+  await Promise.allSettled(entries.map(({ backend, log }) => backend.dispose(log)));
+  return entries.length;
+}
 
 /**
  * Called after the agent finishes but BEFORE the backend is disposed, with the
@@ -62,6 +91,10 @@ export interface RunSessionInput {
   prompt: string;
   /** directory to write this session's logs + artifacts into */
   outDir: string;
+  /** per-principal secrets for this run (LLM key, GitHub token). Resolved by the
+   *  caller's Identity adapter; omitted for standalone runs, which fall back to
+   *  host env / `gh auth token`. Never persisted (kept out of session.json). */
+  credentials?: Credentials;
   /** optional post-work, pre-dispose hook (the orchestrator's publish step) */
   afterWork?: AfterWork;
 }
@@ -108,6 +141,7 @@ async function extractArtifacts(
 
 export async function runSession(input: RunSessionInput): Promise<RunSessionResult> {
   const { sessionId, settings, prompt, outDir } = input;
+  const credentials: Credentials = input.credentials ?? {};
   const log = new SessionLog(outDir, sessionId);
   let timelinePath = "";
 
@@ -140,13 +174,17 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
 
   const backend = resolveBackend(settings);
   const provider = resolveProvider(settings);
+  // Track this run's backend so a shutdown can dispose its sandbox. Registered
+  // before prepare (dispose is a no-op until a sandbox exists) and removed in the
+  // finally below once we've disposed it ourselves.
+  activeSessions.set(sessionId, { backend, log });
 
   // Everything from prepare onward is inside the try so dispose ALWAYS runs once
   // a backend has been stood up — otherwise a failure between prepare and the run
   // (e.g. the clock probe) leaks a cloud sandbox.
   let output: Blackboard = {};
   try {
-    const { workdir, scratchDir } = await backend.prepare(settings, log);
+    const { workdir, scratchDir } = await backend.prepare(settings, log, credentials);
     // Orchestrator provenance: this is the orchestrator declaring the lifecycle
     // boundary, not the backend reporting about itself (the backend's own lines —
     // clock probe, dispose — are emitted inside the adapter and tagged "backend").
@@ -196,7 +234,7 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
     assembledPrompt = `${prompt}${publishProtocol(scratchDir)}`;
     writeFileSync(join(outDir, "prompt.md"), assembledPrompt, "utf8");
 
-    output = await provider.run({ settings, backend, workdir, prompt: assembledPrompt, scratchDir, clockOffsetMs, log });
+    output = await provider.run({ settings, backend, workdir, prompt: assembledPrompt, scratchDir, clockOffsetMs, credentials, log });
     log.emit("orchestrator", "info", `session ${sessionId} finished`);
     // Pull published images out of the (about-to-be-disposed) backend into the
     // session dir so the console can show them. Must run before dispose.
@@ -219,6 +257,10 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
     throw err;
   } finally {
     await backend.dispose(log);
+    // Keep the backend visible to the shutdown sweep until normal disposal has
+    // actually completed. Deleting first creates a window where SIGTERM sees no
+    // active backend and exits while Daytona deletion is still in flight.
+    activeSessions.delete(sessionId);
     // Derive the sorted, readable timeline once the session is fully done — even
     // on failure. Emit the meta line first so it's included in the timeline.
     log.emit("orchestrator", "info", "writing chronological timeline → timeline.log");

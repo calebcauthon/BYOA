@@ -62,6 +62,25 @@ export interface AgentSessionSettings {
 
 export type IgnoreKind = "gitignore" | "dockerignore";
 
+/**
+ * The secrets a single Agent Session needs to reach the outside world, resolved
+ * PER PRINCIPAL and passed explicitly into the run — never read from ambient host
+ * globals by the code that uses them (that was the single-operator shortcut).
+ *
+ *   • Local mode:  host env (OPENROUTER_API_KEY) + `gh auth token`.
+ *   • Hosted mode: the user's BYOK key + a GitHub App installation token.
+ *
+ * Deliberately NOT part of AgentSessionSettings: settings are serialized to
+ * session.json, and secrets must never land on disk. Credentials travel alongside
+ * settings at call time and are dropped after the run.
+ */
+export interface Credentials {
+  /** clones private repos + authorizes the push (GitHub App token hosted; `gh auth token` local) */
+  githubToken?: string;
+  /** the LLM gateway key injected into the agent program's env (BYOK hosted; OPENROUTER_API_KEY local) */
+  llmKey?: string;
+}
+
 // ───────────────────────────── Prompt ─────────────────────────────
 // The assembled instruction actually sent to an agent — a stored, inspectable
 // artifact of every session, not an ephemeral string.

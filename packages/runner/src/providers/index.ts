@@ -5,7 +5,7 @@
  * subscription drives Claude/ChatGPT directly; codex is another. All emit the
  * `agent` log source (the transcript: thinking / input / output / tool calls).
  */
-import type { AgentSessionSettings, Blackboard } from "@automations/core";
+import type { AgentSessionSettings, Blackboard, Credentials } from "@automations/core";
 import type { Backend } from "../backends/index.ts";
 import type { SessionLog } from "../logging.ts";
 
@@ -13,6 +13,9 @@ export interface ProviderRunInput {
   settings: AgentSessionSettings;
   backend: Backend;
   workdir: string;
+  /** per-principal secrets for THIS run (e.g. the BYOK LLM key); host-env fallback
+   *  stays in the provider so single-operator local runs are unaffected. */
+  credentials: Credentials;
   /** the fully-assembled prompt text */
   prompt: string;
   /** a fresh writable dir INSIDE the backend for the agent's session files

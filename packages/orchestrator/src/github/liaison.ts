@@ -45,6 +45,9 @@ export interface PublishContext {
   branch: string;
   /** PR base branch; defaults to the repo's default branch when omitted. */
   base?: string;
+  /** the principal's GitHub token for the push; falls back to `gh auth token`
+   *  (host CLI) when omitted, preserving single-operator local behavior. */
+  token?: string;
   result: AgentResult;
 }
 
@@ -82,10 +85,11 @@ export async function publish(ctx: PublishContext, log: SessionLog): Promise<Pub
   }
 
   // 1) push — through the backend, from wherever the commits are. One-shot token
-  // URL (no token persisted in .git/config); token redacted from logs.
-  const token = (await host("gh", ["auth", "token"])).stdout.trim();
+  // URL (no token persisted in .git/config); token redacted from logs. Prefer the
+  // principal's token (GitHub App, hosted); fall back to the host `gh` CLI (local).
+  const token = ctx.token || (await host("gh", ["auth", "token"])).stdout.trim();
   if (!token) {
-    log.emit("orchestrator", "error", "publish: no gh token (gh auth token)");
+    log.emit("orchestrator", "error", "publish: no github token (principal token or `gh auth token`)");
     return { pushed: false, commentsPosted: 0, skipped: "no-token" };
   }
   const authedUrl = `https://x-access-token:${token}@github.com/${slug}.git`;

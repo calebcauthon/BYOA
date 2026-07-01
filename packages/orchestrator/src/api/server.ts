@@ -16,6 +16,7 @@ import { basename, dirname, extname, join, normalize, resolve } from "node:path"
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
+  AtCapacityError,
   createConversation,
   list,
   renderConversation,
@@ -37,6 +38,7 @@ import {
   writeReposCache,
 } from "../state/store.ts";
 import type { Target } from "@automations/core";
+import { createIdentity } from "../identity/index.ts";
 import {
   authEnabled,
   checkPin,
@@ -263,6 +265,10 @@ async function listBranches(repoPath: string): Promise<Record<string, unknown>> 
   return { repoPath: path, current, branches, recents: listBranchRecents(path) };
 }
 
+// The identity adapter for this deployment (local by default). The whole app
+// resolves "who is this + what are their credentials" through this one seam.
+const identity = createIdentity();
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (req.method === "OPTIONS") {
@@ -434,8 +440,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (parts[2] === "sessions" && method === "POST") {
       const body = (await readBody(req)) as unknown as StartSessionInput;
       try {
-        return send(res, 202, startSession(convId, body));
+        // Resolve the principal's credentials through the identity seam and pass
+        // them into the run — never from the request body (secrets aren't
+        // client-supplied). The principal is guaranteed by the gate above.
+        const principal = await identity.resolvePrincipal(req);
+        const credentials = principal ? await identity.resolveCredentials(principal) : {};
+        return send(res, 202, startSession(convId, body, credentials));
       } catch (err) {
+        if (err instanceof AtCapacityError) return send(res, 429, { error: err.message });
         return send(res, 400, { error: String(err) });
       }
     }
@@ -456,12 +468,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   send(res, 404, { error: "no route", path: url.pathname });
 }
 
-export function startServer(port: number): void {
+export function startServer(port: number): ReturnType<typeof createServer> {
   const server = createServer((req, res) => {
     route(req, res).catch((err) => send(res, 500, { error: String(err) }));
   });
   server.listen(port, () => {
     process.stdout.write(`orchestrator API on http://localhost:${port}\n`);
     logAuthStatus((line) => process.stdout.write(line));
+    identity.logStatus((line) => process.stdout.write(line));
   });
+  return server;
 }

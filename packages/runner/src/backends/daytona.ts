@@ -27,7 +27,7 @@ import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Daytona, Image, type Sandbox, type CreateSandboxFromImageParams } from "@daytonaio/sdk";
-import type { AgentSessionSettings, IgnoreKind } from "@automations/core";
+import type { AgentSessionSettings, Credentials, IgnoreKind } from "@automations/core";
 import {
   redactStr,
   registerBackend,
@@ -44,14 +44,27 @@ const WORKDIR = "/workspace";
 const SCRATCH = "/agent-session";
 const SESSION_POLL_MS = 1_000;
 
+// Sandbox-closing safety net (see docs/saas-plan.md Phase 1.5). Every sandbox we
+// create is TAGGED so a reaper can find it, and given Daytona-side auto-cleanup so
+// a leaked sandbox self-destructs even if our process dies before dispose() runs
+// (a Railway deploy/SIGKILL). autoStop stops it after N idle minutes; autoDelete
+// then removes the stopped sandbox so it stops billing. KEEP disables both.
+const MANAGED_LABEL = "automations.managed";
+const KEEP_SANDBOX = !!process.env.AUTOMATIONS_KEEP_SANDBOX;
+const AUTO_STOP_MIN = Number(process.env.AUTOMATIONS_SANDBOX_AUTOSTOP_MIN ?? 15);
+const AUTO_DELETE_MIN = Number(process.env.AUTOMATIONS_SANDBOX_AUTODELETE_MIN ?? 15);
+
 const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
 const execFileAsync = promisify(execFile);
 
-// A GitHub token from the host's gh CLI, so the sandbox can clone private repos
-// (unauthenticated clones 404 as "Repository not found"). Empty if gh is absent
-// or signed out — public repos still clone without it.
-async function ghToken(): Promise<string> {
+// A GitHub token so the sandbox can clone private repos (unauthenticated clones
+// 404 as "Repository not found"). Prefer the principal's token (a GitHub App
+// installation token in hosted mode); fall back to the host `gh` CLI so local
+// single-operator runs are unchanged. Empty if neither is available — public
+// repos still clone without it.
+async function ghToken(credentials?: Credentials): Promise<string> {
+  if (credentials?.githubToken) return credentials.githubToken;
   try {
     const { stdout } = await execFileAsync("gh", ["auth", "token"], { timeout: 10_000 });
     return stdout.trim();
@@ -119,6 +132,7 @@ class DaytonaBackend implements Backend {
   private readonly settings: AgentSessionSettings;
   private daytona: Daytona | undefined;
   private sandbox: Sandbox | undefined;
+  private disposePromise: Promise<void> | undefined;
 
   constructor(settings: AgentSessionSettings) {
     this.settings = settings;
@@ -150,7 +164,7 @@ class DaytonaBackend implements Backend {
     return r.stdout;
   }
 
-  async prepare(settings: AgentSessionSettings, log: SessionLog): Promise<PreparedBackend> {
+  async prepare(settings: AgentSessionSettings, log: SessionLog, credentials?: Credentials): Promise<PreparedBackend> {
     if (!process.env.DAYTONA_API_KEY) throw new Error("DAYTONA_API_KEY is not set");
     this.daytona = new Daytona();
     // Bake the toolchain INTO the image (pi on a node base that already has
@@ -159,7 +173,15 @@ class DaytonaBackend implements Backend {
     // without it the sandbox comes up on a minimal default image (no bash).
     log.emit("backend", "info", `building sandbox image from ${IMAGE} (pi baked in)…`);
     const image = Image.base(IMAGE).runCommands("npm install -g @mariozechner/pi-coding-agent");
-    const params = { image } as CreateSandboxFromImageParams;
+    const params = {
+      image,
+      // Tag so reapOrphanSandboxes() can find sandboxes WE created.
+      labels: { [MANAGED_LABEL]: "true" },
+      // Daytona-side self-destruct: the last line of defense against leaks if our
+      // process never runs dispose(). Disabled entirely when KEEP is set.
+      autoStopInterval: KEEP_SANDBOX ? 0 : AUTO_STOP_MIN,
+      autoDeleteInterval: KEEP_SANDBOX ? -1 : AUTO_DELETE_MIN,
+    } as CreateSandboxFromImageParams;
     this.sandbox = await this.daytona.create(params, {
       timeout: 600,
       onSnapshotCreateLogs: (line: string) => {
@@ -182,7 +204,7 @@ class DaytonaBackend implements Backend {
       await this.must(`tar xzf /tmp/repo.tgz -C ${WORKDIR}`, log);
     } else {
       const url = `https://github.com/${settings.target.repo}.git`;
-      const token = await ghToken();
+      const token = await ghToken(credentials);
       log.emit("backend", "info", `cloning ${url} (branch ${settings.target.branch}) → ${WORKDIR}${token ? " (gh-authed)" : ""}`);
       await this.sandbox.git.clone(
         url,
@@ -361,14 +383,61 @@ class DaytonaBackend implements Backend {
   }
 
   async dispose(log: SessionLog): Promise<void> {
-    if (!this.sandbox || !this.daytona) return;
-    if (process.env.AUTOMATIONS_KEEP_SANDBOX) {
-      log.emit("backend", "info", `keeping sandbox ${this.sandbox.id} — daytona sandbox ssh ${this.sandbox.id}`);
-      return;
+    // Both runSession's finally and the shutdown sweep may arrive together.
+    // Share the in-flight deletion rather than returning early and letting
+    // shutdown exit before the first caller finishes.
+    if (this.disposePromise) return this.disposePromise;
+    this.disposePromise = (async () => {
+      if (!this.sandbox || !this.daytona) return;
+      if (KEEP_SANDBOX) {
+        log.emit("backend", "info", `keeping sandbox ${this.sandbox.id} — daytona sandbox ssh ${this.sandbox.id}`);
+        return;
+      }
+      await this.daytona.delete(this.sandbox);
+      log.emit("backend", "info", `deleted sandbox ${this.sandbox.id}`);
+    })();
+    try {
+      await this.disposePromise;
+    } catch (err) {
+      // Permit a later caller (or normal finally after a shutdown attempt) to
+      // retry a transient Daytona deletion failure.
+      this.disposePromise = undefined;
+      throw err;
     }
-    await this.daytona.delete(this.sandbox);
-    log.emit("backend", "info", `deleted sandbox ${this.sandbox.id}`);
   }
+}
+
+/**
+ * Reap orphan sandboxes — the belt-and-suspenders cleanup for the case where a
+ * process died (SIGKILL / crash) before dispose() ran and Daytona's own autoStop
+ * hasn't fired yet. Deletes only sandboxes WE labelled that are NOT actively
+ * running: a `started`/`starting` sandbox may belong to a concurrent instance's
+ * live run, so we leave those to autoStop; `stopped`/`archived`/`error` ones are
+ * idle leaks and safe to remove now. Best-effort; a delete failure is skipped.
+ *
+ * Returns the count reaped. No-op (returns 0) when DAYTONA_API_KEY is unset, so
+ * calling it unconditionally on boot is safe for local-only deployments.
+ */
+export async function reapOrphanSandboxes(onLine?: (line: string) => void): Promise<number> {
+  if (!process.env.DAYTONA_API_KEY || KEEP_SANDBOX) return 0;
+  const daytona = new Daytona();
+  let reaped = 0;
+  try {
+    for await (const sb of daytona.list({ labels: { [MANAGED_LABEL]: "true" } })) {
+      const state = String(sb.state ?? "");
+      if (state === "started" || state === "starting") continue; // maybe a live run
+      try {
+        await daytona.delete(sb);
+        reaped += 1;
+        onLine?.(`reaped orphan sandbox ${sb.id} (was ${state || "unknown"})\n`);
+      } catch (err) {
+        onLine?.(`could not reap sandbox ${sb.id}: ${String(err)}\n`);
+      }
+    }
+  } catch (err) {
+    onLine?.(`orphan sweep failed: ${String(err)}\n`);
+  }
+  return reaped;
 }
 
 registerBackend("daytona", (settings) => new DaytonaBackend(settings));

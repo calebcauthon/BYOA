@@ -33,9 +33,11 @@ async function gitHead(backend: Backend, cwd: string, log: SessionLog): Promise<
 class PiProvider implements Provider {
   readonly kind = "pi";
 
-  async run({ settings, backend, workdir, prompt, scratchDir, clockOffsetMs, log }: ProviderRunInput): Promise<Blackboard> {
-    const key = process.env.OPENROUTER_API_KEY;
-    if (!key) throw new Error("OPENROUTER_API_KEY is not set");
+  async run({ settings, backend, workdir, prompt, scratchDir, clockOffsetMs, credentials, log }: ProviderRunInput): Promise<Blackboard> {
+    // Prefer the principal's key (BYOK in hosted mode); fall back to the host env
+    // so single-operator local runs work exactly as before.
+    const key = credentials.llmKey ?? process.env.OPENROUTER_API_KEY;
+    if (!key) throw new Error("no LLM key: set the principal's key (hosted) or OPENROUTER_API_KEY (local)");
 
     const headBefore = await gitHead(backend, workdir, log);
     log.emit("agent", "info", `pi starting (model=${settings.model}, agent=${settings.agent})`, {
