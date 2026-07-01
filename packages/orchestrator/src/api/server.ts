@@ -195,6 +195,15 @@ async function fetchOrgRepos(org: string): Promise<string[]> {
   return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+async function fetchGithubOrgs(): Promise<string[]> {
+  const { stdout } = await execFileAsync(
+    "gh",
+    ["api", "user/orgs", "--paginate", "--jq", ".[].login"],
+    { timeout: 30_000, maxBuffer: 1024 * 1024 },
+  );
+  return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
 interface GhIssue {
   number: number;
   title: string;
@@ -408,7 +417,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // re-types an org. /api/github/repos — cached owner/name list for an org; reads
   // the host cache instantly, only shelling out to `gh` on a miss or ?refresh=1.
   if (parts[0] === "github" && parts[1] === "orgs" && parts.length === 2) {
-    if (method === "GET") return send(res, 200, listGithubOrgs());
+    if (method === "GET") {
+      const saved = listGithubOrgs();
+      if (saved.orgs.length > 0) return send(res, 200, saved);
+      try {
+        return send(res, 200, { orgs: await fetchGithubOrgs(), lastOrg: null });
+      } catch {
+        return send(res, 200, saved);
+      }
+    }
     if (method === "POST") {
       const body = await readBody(req);
       const org = typeof body.org === "string" ? body.org.trim() : "";
