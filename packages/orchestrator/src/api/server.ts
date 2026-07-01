@@ -37,6 +37,14 @@ import {
   writeReposCache,
 } from "../state/store.ts";
 import type { Target } from "@automations/core";
+import {
+  authEnabled,
+  checkPin,
+  clearSessionCookie,
+  isAuthenticated,
+  logAuthStatus,
+  setSessionCookie,
+} from "./auth.ts";
 
 const CONSOLE_DIST = process.env.AUTOMATIONS_CONSOLE_DIST ?? join(process.cwd(), "apps", "console", "dist");
 const execFileAsync = promisify(execFile);
@@ -266,9 +274,33 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.end();
     return;
   }
+  // The static console shell (JS/CSS/HTML — no data) stays public so the browser
+  // can render the login screen; everything sensitive lives under /api and is
+  // gated below.
   if (!url.pathname.startsWith("/api/")) return sendConsole(req, res);
   const parts = url.pathname.replace(/^\/api\//, "").split("/").filter(Boolean);
   const method = req.method ?? "GET";
+
+  // --- auth (reachable without a session) ---------------------------------
+  if (parts[0] === "auth") {
+    if (parts[1] === "session" && method === "GET") {
+      return send(res, 200, { authenticated: isAuthenticated(req), required: authEnabled() });
+    }
+    if (parts[1] === "login" && method === "POST") {
+      if (!authEnabled()) return send(res, 200, { authenticated: true });
+      const body = await readBody(req);
+      if (!checkPin(body.pin)) return send(res, 401, { error: "incorrect PIN" });
+      setSessionCookie(res, req);
+      return send(res, 200, { authenticated: true });
+    }
+    if (parts[1] === "logout" && method === "POST") {
+      clearSessionCookie(res);
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  // Central gate: every other /api route requires a valid session.
+  if (!isAuthenticated(req)) return send(res, 401, { error: "unauthorized" });
 
   // /api/options — static capability/options payload for M4. This is honest
   // about what the runner actually registers today; richer discovery can replace
@@ -430,5 +462,6 @@ export function startServer(port: number): void {
   });
   server.listen(port, () => {
     process.stdout.write(`orchestrator API on http://localhost:${port}\n`);
+    logAuthStatus((line) => process.stdout.write(line));
   });
 }

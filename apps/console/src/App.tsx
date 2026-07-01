@@ -188,8 +188,10 @@ const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers, cache: "no-store" });
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers, cache: "no-store", credentials: "same-origin" });
   if (!res.ok) {
+    // Session expired or missing — let the auth gate take over.
+    if (res.status === 401) window.dispatchEvent(new Event("auth:unauthorized"));
     let detail = `${res.status} ${res.statusText}`;
     try {
       const body = (await res.json()) as { error?: string };

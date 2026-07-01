@@ -1,7 +1,24 @@
 # Deploying to Railway
 
 Deploys as a **single service**. Railpack auto-detects `railpack.json` at the
-repo root — no extra environment variables required.
+repo root.
+
+## Required environment variables (auth)
+
+The whole app is gated behind a single-operator PIN login. Set these on the
+Railway service, or **the site is left open**:
+
+| Variable | Purpose |
+|---|---|
+| `AUTH_PIN` | The PIN the operator types to log in. **If unset, auth is disabled and every `/api` route is public** (a warning is logged at boot). |
+| `AUTH_SECRET` | Random key used to sign session cookies (e.g. `openssl rand -hex 32`). If unset, an ephemeral key is generated and sessions reset on every restart/redeploy. |
+| `AUTH_SESSION_TTL_HOURS` | Optional. Session lifetime in hours (default `720` = 30 days). |
+
+How it works: `POST /api/auth/login` checks the PIN and sets an HTTP-only,
+`SameSite=Lax`, `Secure` (behind HTTPS) cookie signed with `AUTH_SECRET`. Every
+other `/api/*` route verifies that cookie in one central check
+(`packages/orchestrator/src/api/auth.ts`). The static console shell stays public
+so the browser can render the login screen; all data lives behind `/api`.
 
 ## What it does
 
