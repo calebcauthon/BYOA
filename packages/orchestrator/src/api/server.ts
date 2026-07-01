@@ -356,6 +356,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (identity.kind === "hosted" && parts[0] === "local") {
     return send(res, 404, { error: "local checkout routes are unavailable in hosted mode" });
   }
+  if (
+    identity instanceof HostedIdentity &&
+    parts[0] === "github" &&
+    parts[1] === "orgs" &&
+    parts.length === 2 &&
+    method === "GET"
+  ) {
+    return send(res, 200, await identity.listGithubOrgs(principal.id));
+  }
   if (identity.kind === "hosted" && parts[0] === "github") {
     return send(res, 501, { error: "GitHub repository access requires the GitHub App installation phase" });
   }

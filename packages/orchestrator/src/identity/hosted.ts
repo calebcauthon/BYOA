@@ -109,6 +109,14 @@ export class HostedIdentity implements Identity {
         last_used_at timestamptz,
         created_at timestamptz NOT NULL DEFAULT now()
       );
+      CREATE TABLE IF NOT EXISTS user_github_orgs (
+        user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        github_org_id bigint NOT NULL,
+        login text NOT NULL,
+        avatar_url text,
+        imported_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, github_org_id)
+      );
       CREATE INDEX IF NOT EXISTS user_sessions_user_id_idx ON user_sessions(user_id);
       CREATE INDEX IF NOT EXISTS api_keys_user_id_idx ON api_keys(user_id);
     `);
@@ -179,7 +187,7 @@ export class HostedIdentity implements Identity {
       state,
       code_challenge: challenge,
       code_challenge_method: "S256",
-      scope: provider === "github" ? "read:user user:email" : "openid email profile",
+      scope: provider === "github" ? "read:user user:email read:org" : "openid email profile",
       ...(provider === "google" ? { response_type: "code", access_type: "online", prompt: "select_account" } : {}),
     });
     return `${endpoint}?${params}`;
@@ -232,6 +240,16 @@ export class HostedIdentity implements Identity {
           [provider, profile.providerUserId, userId, profile.login],
         );
       }
+      if (provider === "github") {
+        await client.query("DELETE FROM user_github_orgs WHERE user_id=$1", [userId]);
+        for (const org of profile.organizations) {
+          await client.query(
+            `INSERT INTO user_github_orgs(user_id,github_org_id,login,avatar_url)
+             VALUES($1,$2,$3,$4)`,
+            [userId, org.id, org.login, org.avatarUrl],
+          );
+        }
+      }
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -278,6 +296,14 @@ export class HostedIdentity implements Identity {
     return (result.rowCount ?? 0) > 0;
   }
 
+  async listGithubOrgs(userId: string): Promise<{ orgs: string[]; lastOrg: null }> {
+    const result = await this.pool.query(
+      "SELECT login FROM user_github_orgs WHERE user_id=$1 ORDER BY lower(login)",
+      [userId],
+    );
+    return { orgs: result.rows.map((row) => String(row.login)), lastOrg: null };
+  }
+
   logStatus(write: (line: string) => void): void {
     write("identity: hosted (Postgres + GitHub/Google SSO + API keys)\n");
   }
@@ -311,13 +337,34 @@ export class HostedIdentity implements Identity {
       }),
     });
     const headers = { authorization: `Bearer ${token.access_token}`, accept: "application/vnd.github+json" };
-    const [user, emails] = await Promise.all([
+    const [user, emails, organizations] = await Promise.all([
       json<{ id: number; login: string; name: string | null; avatar_url: string | null }>("https://api.github.com/user", { headers }),
       json<Array<{ email: string; primary: boolean; verified: boolean }>>("https://api.github.com/user/emails", { headers }),
+      this.githubOrganizations(headers),
     ]);
     const email = emails.find((item) => item.primary && item.verified) ?? emails.find((item) => item.verified);
     if (!email) throw new Error("GitHub account has no verified email available");
-    return { providerUserId: String(user.id), login: user.login, email: email.email.toLowerCase(), emailVerified: true, name: user.name, avatarUrl: user.avatar_url };
+    return {
+      providerUserId: String(user.id),
+      login: user.login,
+      email: email.email.toLowerCase(),
+      emailVerified: true,
+      name: user.name,
+      avatarUrl: user.avatar_url,
+      organizations: organizations.map((org) => ({ id: org.id, login: org.login, avatarUrl: org.avatar_url })),
+    };
+  }
+
+  private async githubOrganizations(headers: Record<string, string>) {
+    const organizations: Array<{ id: number; login: string; avatar_url: string | null }> = [];
+    for (let page = 1; ; page += 1) {
+      const batch = await json<typeof organizations>(
+        `https://api.github.com/user/orgs?per_page=100&page=${page}`,
+        { headers },
+      );
+      organizations.push(...batch);
+      if (batch.length < 100) return organizations;
+    }
   }
 
   private async googleProfile(code: string, verifier: string) {
@@ -344,6 +391,7 @@ export class HostedIdentity implements Identity {
       emailVerified: user.email_verified,
       name: user.name ?? null,
       avatarUrl: user.picture ?? null,
+      organizations: [],
     };
   }
 }

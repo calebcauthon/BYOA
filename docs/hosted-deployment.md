@@ -32,6 +32,9 @@ The Postgres role therefore needs schema-creation permission on first boot.
 
 - GitHub and Google profiles must expose a provider-verified email.
 - Verified identities with the same email link to the same user.
+- GitHub login requests `read:org` and imports all visible organization
+  memberships into the organization picker. Existing users must sign out and
+  authorize GitHub again once after this scope is introduced.
 - Browser sessions are opaque random tokens; only their SHA-256 hashes are
   stored in Postgres.
 - API keys are shown once and likewise stored only as hashes. Use one with
