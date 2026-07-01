@@ -255,6 +255,51 @@ function saveRobotPresets(presets: RobotPreset[]) {
 }
 
 const ACTIVE_ROBOT_PRESET_KEY = "console.activeRobotPresetId";
+const CODE_SETTINGS_KEY = "console.codeSettings";
+
+type SavedCodeSettings = Pick<
+  LaunchForm,
+  "targetKind" | "repoPath" | "org" | "repo" | "issue" | "branch" | "newBranch" | "branchName" | "publish"
+>;
+
+function loadCodeSettings(): SavedCodeSettings | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CODE_SETTINGS_KEY) ?? "null") as Partial<SavedCodeSettings> | null;
+    if (!parsed || (parsed.targetKind !== "local" && parsed.targetKind !== "remote")) return null;
+    return {
+      targetKind: parsed.targetKind,
+      repoPath: typeof parsed.repoPath === "string" ? parsed.repoPath : "",
+      org: typeof parsed.org === "string" ? parsed.org : "",
+      repo: typeof parsed.repo === "string" ? parsed.repo : "",
+      issue: typeof parsed.issue === "string" ? parsed.issue : "",
+      branch: typeof parsed.branch === "string" && parsed.branch ? parsed.branch : "main",
+      newBranch: typeof parsed.newBranch === "boolean" ? parsed.newBranch : true,
+      branchName: typeof parsed.branchName === "string" && parsed.branchName ? parsed.branchName : "auto/m4-console-run",
+      publish: typeof parsed.publish === "boolean" ? parsed.publish : true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveCodeSettings(form: LaunchForm): void {
+  try {
+    const saved: SavedCodeSettings = {
+      targetKind: form.targetKind,
+      repoPath: form.repoPath,
+      org: form.org,
+      repo: form.repo,
+      issue: form.issue,
+      branch: form.branch,
+      newBranch: form.newBranch,
+      branchName: form.branchName,
+      publish: form.publish,
+    };
+    localStorage.setItem(CODE_SETTINGS_KEY, JSON.stringify(saved));
+  } catch {
+    // Storage can be unavailable in private browsing; the current run still works.
+  }
+}
 
 function loadActiveRobotPresetId(): string | null {
   try {
@@ -275,6 +320,15 @@ function saveActiveRobotPresetId(id: string | null) {
 
 function modelShort(model: string): string {
   return model.split("/").pop() || model;
+}
+
+// Primary-action copy is derived from the run contract, not hard-coded into the
+// button. Add future run intents (for example, answer-only) here as their form
+// variables become explicit.
+function runActionCopy(form: LaunchForm): { idle: string; busy: string } {
+  if (form.publish) return { idle: "Draft PR", busy: "Drafting PR…" };
+  if (form.qaReview) return { idle: "Run QA", busy: "Running QA…" };
+  return { idle: "Run agent", busy: "Starting agent…" };
 }
 
 function targetLabel(target: Target): string {
@@ -861,6 +915,11 @@ function GithubTargetPicker({
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const onChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   useEffect(() => {
     let active = true;
@@ -870,7 +929,7 @@ function GithubTargetPicker({
         setOrgs(payload.orgs);
         if (payload.orgs.length === 0) setAdding(true);
         if (!org) {
-          const fallback = payload.lastOrg ?? (payload.orgs.length === 1 ? payload.orgs[0] : "");
+          const fallback = payload.lastOrg ?? payload.orgs[0] ?? "";
           if (fallback) onChange({ org: fallback, repo: "" });
         }
       })
@@ -879,7 +938,7 @@ function GithubTargetPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadRepos = useCallback((targetOrg: string, refresh = false) => {
+  const loadRepos = useCallback((targetOrg: string, refresh = false, selectFirst = false) => {
     if (!targetOrg) { setRepos([]); setFetchedAt(null); return; }
     setLoadingRepos(true);
     setError(null);
@@ -888,12 +947,13 @@ function GithubTargetPicker({
         setRepos(payload.repos);
         setFetchedAt(payload.fetchedAt);
         setError(payload.error ?? null);
+        if (selectFirst && payload.repos[0]) onChangeRef.current({ repo: payload.repos[0] });
       })
       .catch((err) => { setRepos([]); setError(String(err)); })
       .finally(() => setLoadingRepos(false));
   }, []);
 
-  useEffect(() => { loadRepos(org); }, [org, loadRepos]);
+  useEffect(() => { loadRepos(org, false, !repo); }, [org, loadRepos]);
 
   const saveOrg = async () => {
     const value = newOrg.trim();
@@ -1260,6 +1320,8 @@ function NewRunView({
     return id && presets.some((preset) => preset.id === id) ? id : null;
   });
   const lastUsedPreset = activePresetId ? presets.find((preset) => preset.id === activePresetId) : undefined;
+  const [savedCodeSettings] = useState<SavedCodeSettings | null>(() => initial ? null : loadCodeSettings());
+  const [codeDefaultsReady, setCodeDefaultsReady] = useState(() => !!initial || !!savedCodeSettings);
 
   const [form, setForm] = useState<LaunchForm>(() => ({
     title: "New agent run",
@@ -1273,11 +1335,12 @@ function NewRunView({
     branchName: "auto/m4-console-run",
     provider: lastUsedPreset?.provider ?? "pi",
     model: lastUsedPreset?.model ?? options.providers[0]?.models[0] ?? "anthropic/claude-haiku-4.5",
-    backend: lastUsedPreset?.backend ?? "local",
+    backend: savedCodeSettings?.targetKind === "remote" ? "daytona" : (lastUsedPreset?.backend ?? "local"),
     agent: lastUsedPreset?.agent ?? "generic",
     prompt: "",
     publish: true,
     qaReview: false,
+    ...(savedCodeSettings ?? {}),
     ...initial,
   }));
   const [skills, setSkills] = useState(() => (!initial && lastUsedPreset ? [...lastUsedPreset.skills] : ["browser"]));
@@ -1293,6 +1356,46 @@ function NewRunView({
   const [generating, setGenerating] = useState(false);
   const [instructionModalPresetId, setInstructionModalPresetId] = useState<string | null>(null);
   const [instructionModalOriginalId, setInstructionModalOriginalId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (codeDefaultsReady) return;
+    let active = true;
+    const bootstrapGithub = async () => {
+      try {
+        const organizations = await api<GithubOrgsPayload>("/api/github/orgs");
+        const org = organizations.lastOrg ?? organizations.orgs[0];
+        if (!org) return;
+        const repositories = await api<GithubReposPayload>(`/api/github/repos?org=${encodeURIComponent(org)}`);
+        const repo = repositories.repos[0];
+        if (!repo || !active) return;
+        setForm((current) => ({ ...current, targetKind: "remote", org, repo, backend: "daytona" }));
+      } catch {
+        // No configured GitHub access: retain the usable local fallback.
+      } finally {
+        if (active) setCodeDefaultsReady(true);
+      }
+    };
+    void bootstrapGithub();
+    return () => {
+      active = false;
+    };
+  }, [codeDefaultsReady]);
+
+  useEffect(() => {
+    if (codeDefaultsReady && !initial) saveCodeSettings(form);
+  }, [
+    codeDefaultsReady,
+    form.targetKind,
+    form.repoPath,
+    form.org,
+    form.repo,
+    form.issue,
+    form.branch,
+    form.newBranch,
+    form.branchName,
+    form.publish,
+    initial,
+  ]);
 
   useEffect(() => {
     let alive = true;
@@ -1400,10 +1503,18 @@ function NewRunView({
   const [browseOpen, setBrowseOpen] = useState(false);
   const [nativeBrowsing, setNativeBrowsing] = useState(false);
   const [branchOpen, setBranchOpen] = useState(false);
+  const [codeSettingsOpen, setCodeSettingsOpen] = useState(false);
 
   const providerModels = options.providers.find((p) => p.id === form.provider)?.models ?? [form.model];
   const isRemote = form.targetKind === "remote";
   const branchTarget = form.newBranch ? form.branchName : form.branch;
+  const codeLocation = isRemote
+    ? (form.repo || "Choose a GitHub repository")
+    : (form.repoPath.split("/").filter(Boolean).at(-1) || "Choose a local folder");
+  const codeBranchSummary = form.newBranch
+    ? `${form.branch || "main"} → new ${form.branchName || "branch"}`
+    : form.branch || "Choose a branch";
+  const runAction = runActionCopy(form);
   // Remote (GitHub) checkouts are only materialized by the daytona backend.
   const backendOptions = isRemote ? options.backends.filter((b) => b === "daytona") : options.backends;
 
@@ -1644,8 +1755,86 @@ function NewRunView({
         </div>
       )}
 
+      {codeSettingsOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCodeSettingsOpen(false); }}>
+          <section className="code-settings-modal" role="dialog" aria-modal="true" aria-labelledby="code-settings-title">
+            <header className="instruction-modal-head">
+              <div>
+                <span className="modal-kicker">Run destination</span>
+                <h2 id="code-settings-title">Code &amp; delivery</h2>
+                <p>Choose the checkout, base branch, and how the finished work should be delivered.</p>
+              </div>
+              <button type="button" className="icon-button" aria-label="Close code settings" onClick={() => setCodeSettingsOpen(false)}><X size={16} /></button>
+            </header>
+
+            <section className="code-modal-section">
+              <div className="config-block-head"><h3>Code</h3><p>Where the work should land.</p></div>
+              <div className="target-kind-switch" role="tablist" aria-label="Target kind">
+                <button role="tab" aria-selected={!isRemote} className={!isRemote ? "active" : ""} onClick={() => chooseTargetKind("local")}><FolderGit2 size={13} /> Local</button>
+                <button role="tab" aria-selected={isRemote} className={isRemote ? "active" : ""} onClick={() => chooseTargetKind("remote")}><Github size={13} /> GitHub</button>
+              </div>
+              {isRemote ? (
+                <>
+                  <GithubTargetPicker org={form.org} repo={form.repo} onChange={patch} />
+                  <div className="field-grid github-meta-fields">
+                    <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} placeholder="main" />
+                    <FieldInput label="Issue (optional)" value={form.issue} onChange={(issue) => patch({ issue })} icon={<Link2 size={14} />} placeholder="123" />
+                  </div>
+                </>
+              ) : (
+                <div className="field-grid target-fields">
+                  <div className="field-with-action">
+                    <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
+                    <div className="browse-split">
+                      <button className="browse-button" disabled={nativeBrowsing} onClick={() => void chooseNativeFolder()}><FolderGit2 size={13} /> {nativeBrowsing ? "Choosing…" : "Browse"}</button>
+                      <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
+                    </div>
+                  </div>
+                  <div className="field-with-action branch-field-with-action">
+                    <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
+                    <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            <section className="code-modal-section">
+              <div className="config-block-head"><h3>Delivery</h3><p>Branch &amp; PR for the work.</p></div>
+              <label className="branch-toggle">
+                <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
+                <span className="toggle-track"><i /></span>
+                <span><strong>Create a new branch</strong><small>{form.newBranch ? form.branchName : `work on ${form.branch}`}</small></span>
+              </label>
+              {form.newBranch && (
+                <div className="field-grid single-field">
+                  <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
+                </div>
+              )}
+              <label className="branch-toggle publish-toggle">
+                <input type="checkbox" checked={form.publish} onChange={(event) => patch({ publish: event.target.checked })} />
+                <span className="toggle-track"><i /></span>
+                <span><strong>Open a draft PR when done</strong><small>{isRemote ? "pushes the branch from the sandbox, opens a draft PR" : "pushes the branch & opens a draft PR"}</small></span>
+              </label>
+            </section>
+
+            <footer className="code-settings-foot">
+              <span>{isRemote ? "GitHub" : "Local"} · {codeLocation} · {codeBranchSummary}</span>
+              <button type="button" className="org-save" onClick={() => setCodeSettingsOpen(false)}>Done</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
       <div className="launch-body">
         <div className="launch-main">
+          <button type="button" className="code-context-button" onClick={() => setCodeSettingsOpen(true)}>
+            <span className="code-context-icon">{isRemote ? <Github size={13} /> : <FolderGit2 size={13} />}</span>
+            <span className="code-context-copy">
+              <strong>{codeLocation}</strong>
+              <small>{codeBranchSummary}</small>
+            </span>
+            <span className="code-context-edit">Code settings <ChevronRight size={12} /></span>
+          </button>
           <section className="launch-section prompt-section">
             <div className="prompt-editor">
               <textarea
@@ -1671,64 +1860,12 @@ function NewRunView({
               <span><Cloud size={13} /> {backendLabel(form.backend)}</span>
             </div>
             <button className="launch-button" disabled={!form.prompt.trim() || (isRemote ? !form.repo.trim() : !form.repoPath.trim()) || launching} onClick={submit}>
-              {launching ? "Launching…" : "Launch run"} <span>⌘↵</span><ArrowUpRight size={14} />
+              {launching ? runAction.busy : runAction.idle} <span>⌘↵</span><ArrowUpRight size={14} />
             </button>
           </div>
         </div>
 
         <aside className="config-panel">
-          <section className="config-block">
-            <div className="config-block-head"><h3>Delivery</h3><p>Branch &amp; PR for the work.</p></div>
-            <label className="branch-toggle">
-              <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
-              <span className="toggle-track"><i /></span>
-              <span><strong>Create a new branch</strong><small>{form.newBranch ? form.branchName : `work on ${form.branch}`}</small></span>
-            </label>
-            {form.newBranch && (
-              <div className="field-grid single-field">
-                <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
-              </div>
-            )}
-            <label className="branch-toggle publish-toggle">
-              <input type="checkbox" checked={form.publish} onChange={(event) => patch({ publish: event.target.checked })} />
-              <span className="toggle-track"><i /></span>
-              <span><strong>Open a draft PR when done</strong><small>{isRemote ? "pushes the branch from the sandbox, opens a draft PR" : "pushes the branch & opens a draft PR"}</small></span>
-            </label>
-          </section>
-
-          <section className="config-block">
-            <div className="config-block-head"><h3>Code</h3><p>Where the work should land.</p></div>
-            <div className="target-kind-switch" role="tablist" aria-label="Target kind">
-              <button role="tab" aria-selected={!isRemote} className={!isRemote ? "active" : ""} onClick={() => chooseTargetKind("local")}><FolderGit2 size={13} /> Local</button>
-              <button role="tab" aria-selected={isRemote} className={isRemote ? "active" : ""} onClick={() => chooseTargetKind("remote")}><Github size={13} /> GitHub</button>
-            </div>
-            {isRemote ? (
-              <>
-                <GithubTargetPicker org={form.org} repo={form.repo} onChange={patch} />
-                <div className="field-grid github-meta-fields">
-                  <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} placeholder="main" />
-                  <FieldInput label="Issue (optional)" value={form.issue} onChange={(issue) => patch({ issue })} icon={<Link2 size={14} />} placeholder="123" />
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="field-grid target-fields">
-                  <div className="field-with-action">
-                    <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
-                    <div className="browse-split">
-                      <button className="browse-button" disabled={nativeBrowsing} onClick={() => void chooseNativeFolder()}><FolderGit2 size={13} /> {nativeBrowsing ? "Choosing…" : "Browse"}</button>
-                      <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
-                    </div>
-                  </div>
-                  <div className="field-with-action branch-field-with-action">
-                    <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
-                    <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
-                  </div>
-                </div>
-              </>
-            )}
-          </section>
-
           <section className="config-block">
             <div className="config-block-head"><h3>QA review</h3><p>Screenshot the feature after the run.</p></div>
             <label className="branch-toggle publish-toggle">
