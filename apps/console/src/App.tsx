@@ -769,6 +769,10 @@ function GithubTargetPicker({
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const repoRef = useRef(repo);
+  const onChangeRef = useRef(onChange);
+  repoRef.current = repo;
+  onChangeRef.current = onChange;
 
   useEffect(() => {
     let active = true;
@@ -800,6 +804,12 @@ function GithubTargetPicker({
         setRepos(payload.repos);
         setFetchedAt(payload.fetchedAt);
         setError(payload.error ?? null);
+        // GitHub returns the accessible repository set for this installation.
+        // Start with the first stable (alphabetically sorted) option only when
+        // the user has not already chosen or typed a repository.
+        if (!repoRef.current && payload.repos[0]) {
+          onChangeRef.current({ repo: payload.repos[0] });
+        }
       })
       .catch((err) => { setRepos([]); setError(String(err)); })
       .finally(() => setLoadingRepos(false));
@@ -827,6 +837,7 @@ function GithubTargetPicker({
 
   const shortName = (full: string) => (org && full.startsWith(`${org}/`) ? full.slice(org.length + 1) : full);
   const repoName = shortName(repo);
+  const repoOptions = repos.map(shortName);
   const setRepoName = (value: string) => {
     const trimmed = value.trim();
     onChange({ repo: !trimmed ? "" : trimmed.includes("/") || !org ? trimmed : `${org}/${trimmed}` });
@@ -851,17 +862,13 @@ function GithubTargetPicker({
         />
       )}
       <div className="github-repo-row">
-        <FieldInput
+        <FieldSelect
           label={loadingRepos ? "Repository · loading…" : "Repository"}
           value={repoName}
           onChange={setRepoName}
           icon={<FolderGit2 size={14} />}
-          placeholder={org ? "repository" : "owner/name"}
-          list="github-repos"
+          options={repoOptions}
         />
-        <datalist id="github-repos">
-          {repos.map((r) => <option value={shortName(r)} key={r} />)}
-        </datalist>
         <button className="org-icon-button" aria-label="Refresh repositories" title="Refresh repository list" disabled={!org || loadingRepos} onClick={() => loadRepos(org, true)}>
           <RefreshCw size={13} className={loadingRepos ? "spin" : ""} />
         </button>
