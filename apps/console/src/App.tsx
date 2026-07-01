@@ -776,7 +776,10 @@ function GithubTargetPicker({
         setOrgs(payload.orgs);
         if (payload.orgs.length === 0) setAdding(true);
         if (!org) {
-          const fallback = payload.lastOrg ?? (payload.orgs.length === 1 ? payload.orgs[0] : "");
+          // Hosted SSO can return several organizations and has no host-local
+          // "last used" value yet. Select the first imported owner so the form
+          // is useful immediately instead of showing an empty selector.
+          const fallback = payload.lastOrg ?? payload.orgs[0] ?? "";
           if (fallback) onChange({ org: fallback, repo: "" });
         }
       })

@@ -297,11 +297,23 @@ export class HostedIdentity implements Identity {
   }
 
   async listGithubOrgs(userId: string): Promise<{ orgs: string[]; lastOrg: null }> {
-    const result = await this.pool.query(
-      "SELECT login FROM user_github_orgs WHERE user_id=$1 ORDER BY lower(login)",
-      [userId],
-    );
-    return { orgs: result.rows.map((row) => String(row.login)), lastOrg: null };
+    const [organizations, account] = await Promise.all([
+      this.pool.query(
+        "SELECT login FROM user_github_orgs WHERE user_id=$1 ORDER BY lower(login)",
+        [userId],
+      ),
+      this.pool.query(
+        `SELECT provider_login FROM identity_links
+         WHERE user_id=$1 AND provider='github' LIMIT 1`,
+        [userId],
+      ),
+    ]);
+    const orgs = organizations.rows.map((row) => String(row.login));
+    const personalAccount = account.rows[0]?.provider_login;
+    if (typeof personalAccount === "string" && !orgs.includes(personalAccount)) {
+      orgs.push(personalAccount);
+    }
+    return { orgs, lastOrg: null };
   }
 
   logStatus(write: (line: string) => void): void {
