@@ -3,6 +3,10 @@
  * orchestrator is IO glue, not a framework showcase.
  *
  *   GET  /api/options                                                         → backends/providers/skills
+ *   GET  /api/instructions                                                    → Instruction[]
+ *   POST /api/instructions                       { id?, name, body }          → Instruction
+ *   DELETE /api/instructions/:id                                              → Instruction[]
+ *   POST /api/instructions/generate              { description }              → { body }
  *   POST /api/conversations                      { title, target }            → Conversation
  *   GET  /api/conversations                                                   → Conversation[]
  *   GET  /api/conversations/:id                                              → RenderedConversation
@@ -24,10 +28,13 @@ import {
 } from "../conversation/service.ts";
 import { buildTimeline } from "../logs/timeline.ts";
 import {
+  deleteInstruction,
   getConversation,
   listBranchRecents,
   listGithubOrgs,
+  listInstructions,
   listLocalRecents,
+  saveInstruction,
   readReposCache,
   rememberBranchRecent,
   rememberGithubOrg,
@@ -216,6 +223,35 @@ async function fetchIssues(repo: string): Promise<GhIssue[]> {
   }));
 }
 
+// Turn a short natural-language description into a system prompt via OpenRouter
+// (Haiku — cheap + fast for prompt-writing). Reuses OPENROUTER_API_KEY, the same
+// key the pi provider consumes; no extra dependency (global fetch, Node 18+).
+async function generateInstruction(description: string): Promise<string> {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) throw new Error("OPENROUTER_API_KEY is not set");
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: "anthropic/claude-haiku-4.5",
+      max_tokens: 2_000,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You write concise, effective system prompts for AI coding agents. Given a short description of the desired behavior, output ONLY the system prompt text itself — no preamble, no explanation, no surrounding quotes or markdown fences.",
+        },
+        { role: "user", content: description },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text()).slice(0, 500)}`);
+  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const body = data.choices?.[0]?.message?.content?.trim();
+  if (!body) throw new Error("OpenRouter returned no content");
+  return body;
+}
+
 function cleanBranch(raw: string): string | null {
   const branch = raw.trim().replace(/^remotes\//, "");
   if (!branch || branch.includes("HEAD ->")) return null;
@@ -282,6 +318,35 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       ],
       skills: [{ id: "browser", requires: { backendCapabilities: ["browser"] } }],
     });
+  }
+
+  // /api/instructions — the reusable system-prompt library (host-owned). GET
+  // lists; POST creates (no id) or updates (id) and returns the saved record;
+  // /generate turns a description into prompt text via an LLM.
+  if (parts[0] === "instructions" && parts.length === 1) {
+    if (method === "GET") return send(res, 200, { instructions: listInstructions() });
+    if (method === "POST") {
+      const body = await readBody(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const text = typeof body.body === "string" ? body.body : "";
+      if (!name) return send(res, 400, { error: "name is required" });
+      if (!text.trim()) return send(res, 400, { error: "body is required" });
+      const id = typeof body.id === "string" && body.id ? body.id : undefined;
+      return send(res, 200, saveInstruction({ ...(id ? { id } : {}), name, body: text }));
+    }
+  }
+  if (parts[0] === "instructions" && parts[1] === "generate" && parts.length === 2 && method === "POST") {
+    const body = await readBody(req);
+    const description = typeof body.description === "string" ? body.description.trim() : "";
+    if (!description) return send(res, 400, { error: "description is required" });
+    try {
+      return send(res, 200, { body: await generateInstruction(description) });
+    } catch (err) {
+      return send(res, 400, { error: String(err) });
+    }
+  }
+  if (parts[0] === "instructions" && parts[1] && parts.length === 2 && method === "DELETE") {
+    return send(res, 200, { instructions: deleteInstruction(parts[1]) });
   }
 
   // /api/local/browse and /api/local/recents — local-only operator affordances

@@ -21,7 +21,9 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Terminal,
+  Trash2,
   Wrench,
   X,
 } from "lucide-react";
@@ -130,6 +132,27 @@ interface LaunchForm {
   qaReview: boolean;
 }
 
+interface RobotPreset {
+  id: string;
+  name: string;
+  provider: ProviderKind;
+  model: string;
+  backend: BackendKind;
+  agent: string;
+  skills: string[];
+  /** id of the default instruction (system prompt) this robot remembers, if any */
+  instructionId?: string;
+}
+
+/** A named, reusable system prompt — server-owned (see @automations/core Instruction). */
+interface Instruction {
+  id: string;
+  name: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface LocalRecent {
   path: string;
   selectedAt: string;
@@ -210,6 +233,49 @@ const fallbackOptions: OptionsPayload = {
   ],
   skills: [{ id: "browser", requires: { backendCapabilities: ["browser"] } }],
 };
+
+const ROBOT_PRESETS_KEY = "console.robotPresets";
+
+function loadRobotPresets(): RobotPreset[] {
+  try {
+    const raw = localStorage.getItem(ROBOT_PRESETS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRobotPresets(presets: RobotPreset[]) {
+  try {
+    localStorage.setItem(ROBOT_PRESETS_KEY, JSON.stringify(presets));
+  } catch {
+    // storage unavailable (private mode, quota, etc.) — presets stay in-memory for this session
+  }
+}
+
+const ACTIVE_ROBOT_PRESET_KEY = "console.activeRobotPresetId";
+
+function loadActiveRobotPresetId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_ROBOT_PRESET_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveRobotPresetId(id: string | null) {
+  try {
+    if (id) localStorage.setItem(ACTIVE_ROBOT_PRESET_KEY, id);
+    else localStorage.removeItem(ACTIVE_ROBOT_PRESET_KEY);
+  } catch {
+    // storage unavailable — active preset just won't survive a reload this session
+  }
+}
+
+function modelShort(model: string): string {
+  return model.split("/").pop() || model;
+}
 
 function targetLabel(target: Target): string {
   if (target.kind === "local") return target.repoPath.split("/").filter(Boolean).at(-1) ?? target.repoPath;
@@ -427,6 +493,36 @@ function FieldSelect<T extends string>({
         <small>{label}</small>
         <select value={value} onChange={(event) => onChange(event.target.value as T)}>
           {options.map((option) => <option value={option} key={option}>{render ? render(option) : option}</option>)}
+        </select>
+      </span>
+      <ChevronDown size={13} />
+    </label>
+  );
+}
+
+// Like FieldSelect, but maps instruction id → name (value differs from label) and
+// carries a "None" choice. Used for the run's system prompt and a robot's default.
+function InstructionSelect({
+  label,
+  value,
+  instructions,
+  onChange,
+}: {
+  label: string;
+  value: string | null;
+  instructions: Instruction[];
+  onChange: (id: string | null) => void;
+}) {
+  return (
+    <label className="field-button field-input">
+      <span className="field-icon"><FileCode2 size={14} /></span>
+      <span>
+        <small>{label}</small>
+        <select value={value ?? ""} onChange={(event) => onChange(event.target.value || null)}>
+          <option value="">None</option>
+          {instructions.map((instruction) => (
+            <option value={instruction.id} key={instruction.id}>{instruction.name}</option>
+          ))}
         </select>
       </span>
       <ChevronDown size={13} />
@@ -869,15 +965,302 @@ function GithubTargetPicker({
   );
 }
 
+const HOLD_TO_EDIT_MS = 1200;
+const HOLD_REVEAL_MS = 250;
+const CURRENT_ROBOT_PROMPT = "__current-robot__";
+
+function RobotTile({
+  preset,
+  active,
+  options,
+  instructions,
+  onApply,
+  onUpdate,
+  onRemove,
+  onManageInstruction,
+}: {
+  preset: RobotPreset;
+  active: boolean;
+  options: OptionsPayload;
+  instructions: Instruction[];
+  onApply: () => void;
+  onUpdate: (next: RobotPreset) => void;
+  onRemove: () => void;
+  onManageInstruction: (presetId: string, instructionId: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [holdRatio, setHoldRatio] = useState(0);
+  const [draft, setDraft] = useState<RobotPreset>(preset);
+  const holdRaf = useRef<number | null>(null);
+  const heldRef = useRef(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!editing) setDraft(preset);
+  }, [preset, editing]);
+
+  useEffect(() => {
+    if (!editing) return;
+    const handler = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setEditing(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [editing]);
+
+  const stopHold = () => {
+    if (holdRaf.current !== null) cancelAnimationFrame(holdRaf.current);
+    holdRaf.current = null;
+    setHoldRatio(0);
+  };
+
+  const startHold = () => {
+    heldRef.current = false;
+    const start = performance.now();
+    const tick = () => {
+      const elapsed = performance.now() - start;
+      const ratio = Math.min(1, elapsed / HOLD_TO_EDIT_MS);
+      setHoldRatio(elapsed >= HOLD_REVEAL_MS ? ratio : 0);
+      if (ratio >= 1) {
+        heldRef.current = true;
+        holdRaf.current = null;
+        setDraft(preset);
+        setEditing(true);
+        setHoldRatio(0);
+        return;
+      }
+      holdRaf.current = requestAnimationFrame(tick);
+    };
+    holdRaf.current = requestAnimationFrame(tick);
+  };
+
+  const handlePointerUp = () => {
+    const wasHeldToEdit = heldRef.current;
+    stopHold();
+    if (!wasHeldToEdit) onApply();
+  };
+
+  const draftProviderModels = options.providers.find((p) => p.id === draft.provider)?.models ?? [draft.model];
+
+  const save = () => {
+    if (!draft.name.trim()) return;
+    onUpdate({ ...draft, name: draft.name.trim() });
+    setEditing(false);
+  };
+
+  const remove = () => {
+    setEditing(false);
+    onRemove();
+  };
+
+  return (
+    <div className="robot-tile-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={`robot-tile ${active ? "active" : ""}`}
+        title={`${preset.name} · ${modelShort(preset.model)}`}
+        onPointerDown={startHold}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={stopHold}
+        onPointerCancel={stopHold}
+      >
+        <span
+          className="robot-tile-remove"
+          role="button"
+          tabIndex={-1}
+          aria-label={`Remove preset ${preset.name}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove();
+          }}
+        >
+          <X size={9} />
+        </span>
+        <span className="robot-tile-icon"><Bot size={14} /></span>
+        <strong>{preset.name}</strong>
+        <small>{modelShort(preset.model)}</small>
+        {holdRatio > 0 && <span className="robot-tile-hold" style={{ transform: `scaleX(${holdRatio})` }} />}
+      </button>
+      {!editing && <span className="robot-tile-hint">Hold to edit</span>}
+      {editing && (
+        <div className="robot-editor" role="dialog" aria-label={`Edit ${preset.name}`}>
+          <div className="config-block-head"><h3>Edit preset</h3><p>Update the saved agent configuration.</p></div>
+          <div className="field-grid single-field">
+            <FieldInput label="Preset name" value={draft.name} onChange={(name) => setDraft((d) => ({ ...d, name }))} icon={<Bot size={14} />} />
+          </div>
+          <div className="field-grid runtime-fields">
+            <FieldSelect label="Provider" value={draft.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => setDraft((d) => ({ ...d, provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? d.model }))} icon={<Bot size={14} />} />
+            <FieldSelect label="Model" value={draft.model} options={draftProviderModels} onChange={(model) => setDraft((d) => ({ ...d, model }))} icon={<Bot size={14} />} />
+            <FieldSelect label="Backend" value={draft.backend} options={options.backends} onChange={(backend) => setDraft((d) => ({ ...d, backend }))} icon={<Cloud size={14} />} />
+            <FieldInput label="Agent" value={draft.agent} onChange={(agent) => setDraft((d) => ({ ...d, agent }))} icon={<Bot size={14} />} />
+          </div>
+          <div className="skill-row">
+            <span className="field-label">Skills</span>
+            {draft.skills.map((skill) => (
+              <span className="skill-chip" key={skill}><Link2 size={11} />{skill}<button aria-label={`Remove ${skill}`} onClick={() => setDraft((d) => ({ ...d, skills: d.skills.filter((s) => s !== skill) }))}><X size={10} /></button></span>
+            ))}
+            <button className="add-skill" onClick={() => setDraft((d) => (d.skills.includes("browser") ? d : { ...d, skills: [...d.skills, "browser"] }))}><Plus size={11} /> Add skill</button>
+          </div>
+          <button
+            type="button"
+            className="robot-prompt-row"
+            onClick={() => {
+              setEditing(false);
+              onManageInstruction(preset.id, draft.instructionId ?? null);
+            }}
+          >
+            <span className="robot-prompt-icon"><FileCode2 size={14} /></span>
+            <span>
+              <small>Prompt</small>
+              <strong>
+                {instructions.find((instruction) => instruction.id === draft.instructionId)?.name ?? "No system prompt"}
+              </strong>
+            </span>
+            <span className="robot-prompt-action">{draft.instructionId ? "Edit" : "Create"} <ChevronRight size={13} /></span>
+          </button>
+          <div className="robot-editor-save">
+            <button className="secondary-button robot-editor-delete" onClick={remove}><X size={12} /> Delete</button>
+            <button className="org-save" disabled={!draft.name.trim()} onClick={save}>Save</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentSettingsTile({
+  form,
+  patch,
+  skills,
+  setSkills,
+  options,
+  providerModels,
+  backendOptions,
+  isMatchedPreset,
+  hasPresets,
+  onSavePreset,
+  instructions,
+  instructionId,
+  onManageInstruction,
+}: {
+  form: LaunchForm;
+  patch: (next: Partial<LaunchForm>) => void;
+  skills: string[];
+  setSkills: (updater: (current: string[]) => string[]) => void;
+  options: OptionsPayload;
+  providerModels: string[];
+  backendOptions: BackendKind[];
+  isMatchedPreset: boolean;
+  hasPresets: boolean;
+  onSavePreset: (name: string) => void;
+  instructions: Instruction[];
+  instructionId: string | null;
+  onManageInstruction: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [presetName, setPresetName] = useState("");
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const save = () => {
+    const name = presetName.trim();
+    if (!name) return;
+    onSavePreset(name);
+    setPresetName("");
+  };
+
+  return (
+    <div className="robot-tile-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={`robot-tile robot-tile-edit ${hasPresets ? "robot-tile-add" : ""} ${open ? "open" : ""} ${!hasPresets && isMatchedPreset ? "active" : ""}`}
+        onClick={() => setOpen((v) => !v)}
+        aria-label={hasPresets ? "Add a new agent preset" : "Agent settings"}
+      >
+        {hasPresets ? (
+          <Plus size={20} />
+        ) : (
+          <>
+            <span className="robot-tile-icon"><Bot size={14} /></span>
+            <strong>{providerLabel(form.provider)}</strong>
+            <small>{modelShort(form.model)}</small>
+          </>
+        )}
+      </button>
+      {open && (
+        <div className="robot-editor" role="dialog" aria-label="Agent settings">
+          <div className="config-block-head"><h3>Agent</h3><p>How and where the agent runs.</p></div>
+          <div className="field-grid runtime-fields">
+            <FieldSelect label="Provider" value={form.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => patch({ provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? form.model })} icon={<Bot size={14} />} />
+            <FieldSelect label="Model" value={form.model} options={providerModels} onChange={(model) => patch({ model })} icon={<Bot size={14} />} />
+            <FieldSelect label="Backend" value={form.backend} options={backendOptions} onChange={(backend) => patch({ backend })} icon={<Cloud size={14} />} />
+            <FieldInput label="Agent" value={form.agent} onChange={(agent) => patch({ agent })} icon={<Bot size={14} />} />
+          </div>
+          <div className="skill-row">
+            <span className="field-label">Skills</span>
+            {skills.map((skill) => (
+              <span className="skill-chip" key={skill}><Link2 size={11} />{skill}<button aria-label={`Remove ${skill}`} onClick={() => setSkills((current) => current.filter((item) => item !== skill))}><X size={10} /></button></span>
+            ))}
+            <button className="add-skill" onClick={() => setSkills((current) => current.includes("browser") ? current : [...current, "browser"])}><Plus size={11} /> Add skill</button>
+          </div>
+          <button
+            type="button"
+            className="robot-prompt-row"
+            onClick={() => {
+              setOpen(false);
+              onManageInstruction();
+            }}
+          >
+            <span className="robot-prompt-icon"><FileCode2 size={14} /></span>
+            <span>
+              <small>Prompt</small>
+              <strong>
+                {instructions.find((instruction) => instruction.id === instructionId)?.name ?? "No system prompt"}
+              </strong>
+            </span>
+            <span className="robot-prompt-action">{instructionId ? "Edit" : "Create"} <ChevronRight size={13} /></span>
+          </button>
+          <div className="robot-editor-save">
+            <input
+              value={presetName}
+              onChange={(event) => setPresetName(event.target.value)}
+              placeholder="Save as preset…"
+              aria-label="Preset name"
+              onKeyDown={(event) => { if (event.key === "Enter") save(); }}
+            />
+            <button className="org-save" disabled={!presetName.trim()} onClick={save}>Save</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NewRunView({
   options,
   onLaunch,
   initial,
 }: {
   options: OptionsPayload;
-  onLaunch: (form: LaunchForm) => Promise<void>;
+  onLaunch: (form: LaunchForm, persona?: string) => Promise<void>;
   initial?: Partial<LaunchForm> | undefined;
 }) {
+  const [presets, setPresets] = useState<RobotPreset[]>(() => loadRobotPresets());
+  const [activePresetId, setActivePresetId] = useState<string | null>(() => {
+    const id = loadActiveRobotPresetId();
+    return id && presets.some((preset) => preset.id === id) ? id : null;
+  });
+  const lastUsedPreset = activePresetId ? presets.find((preset) => preset.id === activePresetId) : undefined;
+
   const [form, setForm] = useState<LaunchForm>(() => ({
     title: "New agent run",
     targetKind: "local",
@@ -888,16 +1271,130 @@ function NewRunView({
     branch: "main",
     newBranch: true,
     branchName: "auto/m4-console-run",
-    provider: "pi",
-    model: options.providers[0]?.models[0] ?? "anthropic/claude-haiku-4.5",
-    backend: "local",
-    agent: "generic",
+    provider: lastUsedPreset?.provider ?? "pi",
+    model: lastUsedPreset?.model ?? options.providers[0]?.models[0] ?? "anthropic/claude-haiku-4.5",
+    backend: lastUsedPreset?.backend ?? "local",
+    agent: lastUsedPreset?.agent ?? "generic",
     prompt: "",
     publish: true,
     qaReview: false,
     ...initial,
   }));
-  const [skills, setSkills] = useState(["browser"]);
+  const [skills, setSkills] = useState(() => (!initial && lastUsedPreset ? [...lastUsedPreset.skills] : ["browser"]));
+
+  // Instruction (system prompt) library — server-owned. `instructionBody` is the
+  // live text sent as the run's persona; it diverges from the saved copy once
+  // edited or generated, until re-saved.
+  const [instructions, setInstructions] = useState<Instruction[]>([]);
+  const [selectedInstructionId, setSelectedInstructionId] = useState<string | null>(lastUsedPreset?.instructionId ?? null);
+  const [instructionBody, setInstructionBody] = useState("");
+  const [instructionName, setInstructionName] = useState("");
+  const [genDescription, setGenDescription] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [instructionModalPresetId, setInstructionModalPresetId] = useState<string | null>(null);
+  const [instructionModalOriginalId, setInstructionModalOriginalId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api<{ instructions: Instruction[] }>("/api/instructions")
+      .then((r) => {
+        if (!alive) return;
+        setInstructions(r.instructions);
+        // Hydrate the editor if a preset (or last run) had one selected.
+        setSelectedInstructionId((current) => {
+          const found = current ? r.instructions.find((i) => i.id === current) : undefined;
+          if (found) {
+            setInstructionBody(found.body);
+            setInstructionName(found.name);
+          }
+          return found ? current : null;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const selectInstruction = (id: string | null) => {
+    if (!id) {
+      setSelectedInstructionId(null);
+      setInstructionBody("");
+      setInstructionName("");
+      return;
+    }
+    const found = instructions.find((i) => i.id === id);
+    if (!found) return;
+    setSelectedInstructionId(id);
+    setInstructionBody(found.body);
+    setInstructionName(found.name);
+  };
+
+  const openInstructionModal = (presetId: string, instructionId: string | null) => {
+    setInstructionModalOriginalId(selectedInstructionId);
+    selectInstruction(instructionId);
+    setGenDescription("");
+    setInstructionModalPresetId(presetId);
+  };
+
+  const closeInstructionModal = () => {
+    setInstructionModalPresetId(null);
+    selectInstruction(instructionModalOriginalId);
+  };
+
+  const generateInstruction = async () => {
+    if (!genDescription.trim()) return;
+    setGenerating(true);
+    setError(null);
+    try {
+      const { body } = await api<{ body: string }>("/api/instructions/generate", {
+        method: "POST",
+        body: JSON.stringify({ description: genDescription }),
+      });
+      setInstructionBody(body);
+      setSelectedInstructionId(null); // generated text diverges from any saved one
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // Persist the editor. With an id → update that instruction; without → create.
+  const persistInstruction = async (id?: string) => {
+    const name = instructionName.trim();
+    if (!name || !instructionBody.trim()) return;
+    try {
+      const saved = await api<Instruction>("/api/instructions", {
+        method: "POST",
+        body: JSON.stringify({ ...(id ? { id } : {}), name, body: instructionBody }),
+      });
+      setInstructions((current) => [saved, ...current.filter((i) => i.id !== saved.id)]);
+      setSelectedInstructionId(saved.id);
+      setInstructionName(saved.name);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const deleteInstruction = async () => {
+    if (!selectedInstructionId) return;
+    try {
+      const { instructions: remaining } = await api<{ instructions: Instruction[] }>(
+        `/api/instructions/${encodeURIComponent(selectedInstructionId)}`,
+        { method: "DELETE" },
+      );
+      setInstructions(remaining);
+      selectInstruction(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const selectedInstruction = selectedInstructionId ? instructions.find((i) => i.id === selectedInstructionId) : undefined;
+  const instructionDirty =
+    !!selectedInstruction && (selectedInstruction.body !== instructionBody || selectedInstruction.name !== instructionName.trim());
+
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browseOpen, setBrowseOpen] = useState(false);
@@ -912,6 +1409,86 @@ function NewRunView({
 
   const patch = (next: Partial<LaunchForm>) => setForm((current) => ({ ...current, ...next }));
 
+  const applyPreset = (preset: RobotPreset) => {
+    patch({ provider: preset.provider, model: preset.model, backend: preset.backend, agent: preset.agent });
+    setSkills([...preset.skills]);
+    selectInstruction(preset.instructionId ?? null);
+    setActivePresetId(preset.id);
+    saveActiveRobotPresetId(preset.id);
+  };
+
+  // Manual edits from the settings popover diverge from whichever preset was active, so drop the highlight.
+  const patchAgentSettings = (next: Partial<LaunchForm>) => {
+    setActivePresetId(null);
+    saveActiveRobotPresetId(null);
+    patch(next);
+  };
+
+  const setSkillsManually: typeof setSkills = (updater) => {
+    setActivePresetId(null);
+    saveActiveRobotPresetId(null);
+    setSkills(updater);
+  };
+
+  const saveCurrentAsPreset = (name: string) => {
+    const preset: RobotPreset = {
+      id: (crypto.randomUUID?.() ?? `preset-${Date.now()}`),
+      name,
+      provider: form.provider,
+      model: form.model,
+      backend: form.backend,
+      agent: form.agent,
+      skills: [...skills],
+      ...(selectedInstructionId ? { instructionId: selectedInstructionId } : {}),
+    };
+    setPresets((current) => {
+      const next = [...current, preset];
+      saveRobotPresets(next);
+      return next;
+    });
+    setActivePresetId(preset.id);
+    saveActiveRobotPresetId(preset.id);
+  };
+
+  const removePreset = (id: string) => {
+    setPresets((current) => {
+      const next = current.filter((preset) => preset.id !== id);
+      saveRobotPresets(next);
+      return next;
+    });
+    if (activePresetId === id) {
+      setActivePresetId(null);
+      saveActiveRobotPresetId(null);
+    }
+  };
+
+  const updatePreset = (updated: RobotPreset) => {
+    setPresets((current) => {
+      const next = current.map((preset) => (preset.id === updated.id ? updated : preset));
+      saveRobotPresets(next);
+      return next;
+    });
+    if (activePresetId === updated.id) {
+      patch({ provider: updated.provider, model: updated.model, backend: updated.backend, agent: updated.agent });
+      setSkills([...updated.skills]);
+      selectInstruction(updated.instructionId ?? null);
+    }
+  };
+
+  const assignInstructionToPreset = (instructionId: string | null) => {
+    if (!instructionModalPresetId) return;
+    if (instructionModalPresetId === CURRENT_ROBOT_PROMPT) {
+      selectInstruction(instructionId);
+      setInstructionModalPresetId(null);
+      return;
+    }
+    const preset = presets.find((item) => item.id === instructionModalPresetId);
+    if (!preset) return;
+    const { instructionId: _drop, ...rest } = preset;
+    updatePreset(instructionId ? { ...rest, instructionId } : rest);
+    setInstructionModalPresetId(null);
+  };
+
   const chooseTargetKind = (kind: "local" | "remote") =>
     patch(kind === "remote" ? { targetKind: "remote", backend: "daytona" } : { targetKind: "local" });
 
@@ -919,7 +1496,7 @@ function NewRunView({
     setLaunching(true);
     setError(null);
     try {
-      await onLaunch(form);
+      await onLaunch(form, instructionBody.trim() || undefined);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -951,14 +1528,121 @@ function NewRunView({
 
   return (
     <section className="launch-view">
-      <header className="launch-head">
-        <div>
-          <div className="eyebrow">NEW CONVERSATION</div>
-          <h1>Start an agent run</h1>
-          <p>Choose the target and execution context, then describe the outcome.</p>
+      <header className="launch-head robot-head">
+        <div className="robot-bar" role="group" aria-label="Agent presets">
+          {presets.map((preset) => (
+            <RobotTile
+              key={preset.id}
+              preset={preset}
+              active={preset.id === activePresetId}
+              options={options}
+              instructions={instructions}
+              onApply={() => applyPreset(preset)}
+              onUpdate={updatePreset}
+              onRemove={() => removePreset(preset.id)}
+              onManageInstruction={openInstructionModal}
+            />
+          ))}
+          <AgentSettingsTile
+            form={form}
+            patch={patchAgentSettings}
+            skills={skills}
+            setSkills={setSkillsManually}
+            options={options}
+            providerModels={providerModels}
+            backendOptions={backendOptions}
+            isMatchedPreset={activePresetId !== null}
+            hasPresets={presets.length > 0}
+            onSavePreset={saveCurrentAsPreset}
+            instructions={instructions}
+            instructionId={selectedInstructionId}
+            onManageInstruction={() => openInstructionModal(CURRENT_ROBOT_PROMPT, selectedInstructionId)}
+          />
         </div>
         <span className="draft-state">Browser draft</span>
       </header>
+
+      {instructionModalPresetId && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeInstructionModal}>
+          <section
+            className="instruction-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="instruction-modal-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="instruction-modal-head">
+              <div>
+                <span className="modal-kicker">Robot prompt</span>
+                <h2 id="instruction-modal-title">System prompt</h2>
+                <p>Choose a saved prompt, write one directly, or generate a starting point.</p>
+              </div>
+              <button type="button" className="icon-button" aria-label="Close prompt editor" onClick={closeInstructionModal}><X size={16} /></button>
+            </header>
+
+            <InstructionSelect label="Saved prompt" value={selectedInstructionId} instructions={instructions} onChange={selectInstruction} />
+
+            <label className="instruction-modal-field">
+              <span>Prompt</span>
+              <textarea
+                value={instructionBody}
+                onChange={(event) => setInstructionBody(event.target.value)}
+                placeholder="Describe how this robot should behave…"
+                autoFocus
+              />
+            </label>
+
+            <div className="instruction-generate">
+              <input
+                value={genDescription}
+                onChange={(event) => setGenDescription(event.target.value)}
+                placeholder="Describe the prompt you want generated…"
+                aria-label="Describe the instruction to generate"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void generateInstruction();
+                  }
+                }}
+              />
+              <button type="button" className="instruction-gen-button" disabled={generating || !genDescription.trim()} onClick={() => void generateInstruction()}>
+                <Sparkles size={14} /> {generating ? "Generating…" : "Generate"}
+              </button>
+            </div>
+
+            <div className="instruction-save-row">
+              <input
+                value={instructionName}
+                onChange={(event) => setInstructionName(event.target.value)}
+                placeholder="Prompt name"
+                aria-label="Prompt name"
+              />
+              {instructionDirty && (
+                <button type="button" className="secondary-button" disabled={!instructionName.trim() || !instructionBody.trim()} onClick={() => void persistInstruction(selectedInstructionId ?? undefined)}>
+                  <Check size={13} /> Save
+                </button>
+              )}
+              <button type="button" className="secondary-button" disabled={!instructionName.trim() || !instructionBody.trim()} onClick={() => void persistInstruction()}>
+                <Plus size={13} /> Save new
+              </button>
+              {selectedInstructionId && (
+                <button type="button" className="icon-button instruction-delete" aria-label="Delete saved prompt" onClick={() => void deleteInstruction()}>
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+
+            <footer className="instruction-modal-foot">
+              <button type="button" className="secondary-button" onClick={() => assignInstructionToPreset(null)}>No prompt</button>
+              <span />
+              <button type="button" className="secondary-button" onClick={closeInstructionModal}>Cancel</button>
+              <button type="button" className="org-save" disabled={!selectedInstructionId} onClick={() => assignInstructionToPreset(selectedInstructionId)}>
+                Use prompt
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       <div className="launch-body">
         <div className="launch-main">
@@ -1043,23 +1727,6 @@ function NewRunView({
                 </div>
               </>
             )}
-          </section>
-
-          <section className="config-block">
-            <div className="config-block-head"><h3>Agent</h3><p>How and where the agent runs.</p></div>
-            <div className="field-grid runtime-fields">
-              <FieldSelect label="Provider" value={form.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => patch({ provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? form.model })} icon={<Bot size={14} />} />
-              <FieldSelect label="Model" value={form.model} options={providerModels} onChange={(model) => patch({ model })} icon={<Bot size={14} />} />
-              <FieldSelect label="Backend" value={form.backend} options={backendOptions} onChange={(backend) => patch({ backend })} icon={<Cloud size={14} />} />
-              <FieldInput label="Agent" value={form.agent} onChange={(agent) => patch({ agent })} icon={<Bot size={14} />} />
-            </div>
-            <div className="skill-row">
-              <span className="field-label">Skills</span>
-              {skills.map((skill) => (
-                <span className="skill-chip" key={skill}><Link2 size={11} />{skill}<button aria-label={`Remove ${skill}`} onClick={() => setSkills((current) => current.filter((item) => item !== skill))}><X size={10} /></button></span>
-              ))}
-              <button className="add-skill" onClick={() => setSkills((current) => current.includes("browser") ? current : [...current, "browser"])}><Plus size={11} /> Add skill</button>
-            </div>
           </section>
 
           <section className="config-block">
@@ -1596,7 +2263,7 @@ function App() {
     window.history.pushState(null, "", "/new");
   };
 
-  const launch = async (form: LaunchForm) => {
+  const launch = async (form: LaunchForm, persona?: string) => {
     const newBranchName = form.newBranch ? form.branchName.trim() : "";
     const issue = form.issue.trim();
     const target: Target = form.targetKind === "remote"
@@ -1622,6 +2289,7 @@ function App() {
           agent: form.agent,
         },
         task: form.prompt,
+        ...(persona ? { persona } : {}),
         publish: form.publish,
         qaReview: form.qaReview,
       }),
