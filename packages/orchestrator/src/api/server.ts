@@ -25,7 +25,7 @@ import {
 } from "../conversation/service.ts";
 import { buildTimeline } from "../logs/timeline.ts";
 import {
-  getConversation,
+  getOwnedConversation,
   listBranchRecents,
   listGithubOrgs,
   listLocalRecents,
@@ -38,7 +38,7 @@ import {
   writeReposCache,
 } from "../state/store.ts";
 import type { Target } from "@automations/core";
-import { createIdentity } from "../identity/index.ts";
+import { createIdentity, HostedIdentity } from "../identity/index.ts";
 import {
   authEnabled,
   checkPin,
@@ -60,6 +60,11 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 function sendText(res: ServerResponse, status: number, text: string): void {
   res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" });
   res.end(text);
+}
+
+function redirect(res: ServerResponse, location: string): void {
+  res.writeHead(302, { location });
+  res.end();
 }
 
 function mime(path: string): string {
@@ -274,8 +279,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET,POST,OPTIONS",
-      "access-control-allow-headers": "content-type",
+      "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
+      "access-control-allow-headers": "content-type,authorization",
     });
     res.end();
     return;
@@ -290,9 +295,29 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // --- auth (reachable without a session) ---------------------------------
   if (parts[0] === "auth") {
     if (parts[1] === "session" && method === "GET") {
+      if (identity instanceof HostedIdentity) return send(res, 200, await identity.sessionInfo(req));
       return send(res, 200, { authenticated: isAuthenticated(req), required: authEnabled() });
     }
+    if (identity instanceof HostedIdentity && (parts[1] === "github" || parts[1] === "google")) {
+      const provider = parts[1];
+      if (parts.length === 2 && method === "GET") {
+        try {
+          return redirect(res, await identity.beginOAuth(provider, req, res));
+        } catch (err) {
+          return send(res, 503, { error: String(err) });
+        }
+      }
+      if (parts[2] === "callback" && method === "GET") {
+        try {
+          await identity.completeOAuth(provider, req, res, url);
+          return redirect(res, "/");
+        } catch (err) {
+          return redirect(res, `/?auth_error=${encodeURIComponent(String(err))}`);
+        }
+      }
+    }
     if (parts[1] === "login" && method === "POST") {
+      if (identity instanceof HostedIdentity) return send(res, 405, { error: "use GitHub or Google SSO" });
       if (!authEnabled()) return send(res, 200, { authenticated: true });
       const body = await readBody(req);
       if (!checkPin(body.pin)) return send(res, 401, { error: "incorrect PIN" });
@@ -300,20 +325,47 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return send(res, 200, { authenticated: true });
     }
     if (parts[1] === "logout" && method === "POST") {
+      if (identity instanceof HostedIdentity) {
+        await identity.logout(req, res);
+        return send(res, 200, { ok: true });
+      }
       clearSessionCookie(res);
       return send(res, 200, { ok: true });
     }
   }
 
-  // Central gate: every other /api route requires a valid session.
-  if (!isAuthenticated(req)) return send(res, 401, { error: "unauthorized" });
+  // Central gate: resolve once and carry the principal through every scoped
+  // operation. Hosted accepts either its session cookie or a Bearer API key.
+  const principal = await identity.resolvePrincipal(req);
+  if (!principal) return send(res, 401, { error: "unauthorized" });
+
+  if (parts[0] === "account" && parts.length === 1 && method === "GET") {
+    return send(res, 200, { user: principal, mode: identity.kind });
+  }
+  if (parts[0] === "account" && parts[1] === "api-keys" && identity instanceof HostedIdentity) {
+    if (parts.length === 2 && method === "GET") return send(res, 200, { keys: await identity.listApiKeys(principal.id) });
+    if (parts.length === 2 && method === "POST") {
+      const body = await readBody(req);
+      return send(res, 201, await identity.createApiKey(principal.id, typeof body.name === "string" ? body.name : "API key"));
+    }
+    if (parts[2] && method === "DELETE") {
+      return send(res, (await identity.revokeApiKey(principal.id, parts[2])) ? 200 : 404, { ok: true });
+    }
+  }
+
+  if (identity.kind === "hosted" && parts[0] === "local") {
+    return send(res, 404, { error: "local checkout routes are unavailable in hosted mode" });
+  }
+  if (identity.kind === "hosted" && parts[0] === "github") {
+    return send(res, 501, { error: "GitHub repository access requires the GitHub App installation phase" });
+  }
 
   // /api/options — static capability/options payload for M4. This is honest
   // about what the runner actually registers today; richer discovery can replace
   // it without changing the console contract.
   if (parts[0] === "options" && parts.length === 1 && method === "GET") {
     return send(res, 200, {
-      backends: ["local", "container", "daytona"],
+      backends: identity.kind === "hosted" ? ["daytona"] : ["local", "container", "daytona"],
       providers: [
         { id: "pi", models: ["anthropic/claude-haiku-4.5", "anthropic/claude-sonnet-4.5", "anthropic/claude-opus-4.1"] },
         { id: "claude-subscription", models: ["sonnet", "opus"] },
@@ -418,10 +470,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   // /api/conversations
   if (parts[0] === "conversations" && parts.length === 1) {
-    if (method === "GET") return send(res, 200, list());
+    if (method === "GET") return send(res, 200, list(principal.id));
     if (method === "POST") {
       const body = await readBody(req);
-      return send(res, 201, createConversation({ title: String(body["title"] ?? "untitled"), target: body["target"] as Target }));
+      const target = body["target"] as Target;
+      if (identity.kind === "hosted" && target?.kind !== "remote") {
+        return send(res, 400, { error: "hosted conversations require a remote GitHub target" });
+      }
+      return send(res, 201, createConversation(principal.id, { title: String(body["title"] ?? "untitled"), target }));
     }
   }
 
@@ -429,23 +485,25 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (parts[0] === "conversations" && parts[1]) {
     const convId = parts[1];
     if (parts.length === 2 && method === "GET") {
-      const rendered = renderConversation(convId);
+      const rendered = renderConversation(principal.id, convId);
       return rendered ? send(res, 200, rendered) : send(res, 404, { error: "not found" });
     }
     if (parts[2] === "timeline" && method === "GET") {
-      if (!getConversation(convId)) return send(res, 404, { error: "not found" });
+      if (!getOwnedConversation(convId, principal.id)) return send(res, 404, { error: "not found" });
       const anchor = url.searchParams.get("anchor") === "session" ? "session" : "conversation";
       return send(res, 200, buildTimeline(convId, anchor));
     }
     if (parts[2] === "sessions" && method === "POST") {
       const body = (await readBody(req)) as unknown as StartSessionInput;
       try {
+        if (identity.kind === "hosted" && body.settings?.backend !== "daytona") {
+          return send(res, 400, { error: "hosted sessions require the Daytona backend" });
+        }
         // Resolve the principal's credentials through the identity seam and pass
         // them into the run — never from the request body (secrets aren't
         // client-supplied). The principal is guaranteed by the gate above.
-        const principal = await identity.resolvePrincipal(req);
-        const credentials = principal ? await identity.resolveCredentials(principal) : {};
-        return send(res, 202, startSession(convId, body, credentials));
+        const credentials = await identity.resolveCredentials(principal);
+        return send(res, 202, startSession(principal.id, convId, body, credentials));
       } catch (err) {
         if (err instanceof AtCapacityError) return send(res, 429, { error: err.message });
         return send(res, 400, { error: String(err) });
@@ -458,6 +516,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // backend (e.g. a QA screenshot). Served from the session dir; name is
     // sanitized to its basename so it can't escape the artifacts folder.
     if (parts[2] === "sessions" && parts[3] && parts[4] === "artifacts" && parts[5] && method === "GET") {
+      if (!getOwnedConversation(convId, principal.id)) return send(res, 404, { error: "not found" });
       const name = basename(parts[5]);
       const path = join(sessionDir(convId, parts[3]), "artifacts", name);
       if (!existsSync(path)) return send(res, 404, { error: "not found" });
@@ -474,8 +533,20 @@ export function startServer(port: number): ReturnType<typeof createServer> {
   });
   server.listen(port, () => {
     process.stdout.write(`orchestrator API on http://localhost:${port}\n`);
-    logAuthStatus((line) => process.stdout.write(line));
+    if (!(identity instanceof HostedIdentity)) logAuthStatus((line) => process.stdout.write(line));
     identity.logStatus((line) => process.stdout.write(line));
+    if (identity instanceof HostedIdentity) {
+      void identity.ready
+        .then(() => process.stdout.write("hosted identity database ready\n"))
+        .catch((error) => {
+          process.stderr.write(`hosted identity database failed: ${String(error)}\n`);
+          server.close(() => {
+            void identity.close().finally(() => {
+              process.exitCode = 1;
+            });
+          });
+        });
+    }
   });
   return server;
 }

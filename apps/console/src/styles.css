@@ -800,3 +800,29 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
   border: 0; border-radius: var(--radius-md);
 }
 .auth-submit:disabled { opacity: .55; cursor: not-allowed; }
+.auth-sso { display: flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; }
+.auth-google { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+.google-mark { font: 700 17px system-ui; color: #4285f4; }
+.account-trigger {
+  position: fixed; top: 14px; right: 14px; z-index: 30; display: grid; place-items: center;
+  width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface); color: var(--text-2); cursor: pointer;
+}
+.account-backdrop { position: fixed; inset: 0; z-index: 100; display: flex; justify-content: flex-end; background: rgb(0 0 0 / .42); }
+.account-panel {
+  position: relative; width: min(420px, 100%); height: 100%; overflow-y: auto;
+  padding: 32px 28px; background: var(--surface); border-left: 1px solid var(--border);
+}
+.account-close { position: absolute; top: 18px; right: 18px; border: 0; background: transparent; color: var(--text-2); cursor: pointer; }
+.account-panel h2 { margin: 0 0 8px; }
+.account-email { color: var(--text-2); line-height: 1.5; }
+.account-email small, .account-help, .account-key small { color: var(--text-3); }
+.account-heading { display: flex; gap: 8px; align-items: center; margin-top: 30px; }
+.account-help { font-size: 12px; line-height: 1.5; }
+.account-secret { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); }
+.account-secret code { overflow-wrap: anywhere; font-size: 11px; }
+.account-secret button, .account-key button { justify-self: end; border: 0; background: transparent; color: var(--accent); cursor: pointer; }
+.account-keys { display: grid; margin-top: 14px; }
+.account-key { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
+.account-key span { display: grid; gap: 3px; }
+.account-logout { display: flex; align-items: center; gap: 7px; margin-top: 28px; border: 0; background: transparent; color: var(--danger); cursor: pointer; }

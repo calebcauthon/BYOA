@@ -61,12 +61,19 @@ export function getConversation(id: string): Conversation | null {
   return readJSON<Conversation>(join(conversationDir(id), "conversation.json"));
 }
 
-export function listConversations(): Conversation[] {
+export function getOwnedConversation(id: string, ownerUserId: string): Conversation | null {
+  const conversation = getConversation(id);
+  if (!conversation) return null;
+  const owner = conversation.ownerUserId ?? "local";
+  return owner === ownerUserId ? conversation : null;
+}
+
+export function listConversations(ownerUserId: string): Conversation[] {
   if (!existsSync(CONV_DIR)) return [];
   const out: Conversation[] = [];
   for (const id of readdirSync(CONV_DIR)) {
     const conv = getConversation(id);
-    if (conv) out.push(conv);
+    if (conv && (conv.ownerUserId ?? "local") === ownerUserId) out.push(conv);
   }
   out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
   return out;

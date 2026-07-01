@@ -39,6 +39,7 @@ export interface Identity {
 }
 
 import { LocalIdentity } from "./local.ts";
+import { HostedIdentity } from "./hosted.ts";
 
 /**
  * Pick the identity adapter for this deployment. Local by default; a hosted
@@ -46,5 +47,8 @@ import { LocalIdentity } from "./local.ts";
  * mode is chosen, so the rest of the orchestrator stays adapter-agnostic.
  */
 export function createIdentity(): Identity {
+  if (process.env.IDENTITY_MODE === "hosted") return new HostedIdentity();
   return new LocalIdentity();
 }
+
+export { HostedIdentity } from "./hosted.ts";

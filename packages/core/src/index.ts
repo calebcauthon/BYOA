@@ -135,6 +135,9 @@ export interface SessionArtifact {
 
 export interface Conversation {
   id: ConversationId;
+  /** Identity-port principal that owns this conversation. Legacy local records
+   * omit it and are treated as owned by the built-in `local` principal only. */
+  ownerUserId?: string;
   title: string;
   target: Target;
   /** ordered; the conversation reads continuous but each session is its own thing */
