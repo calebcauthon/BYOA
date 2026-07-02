@@ -73,7 +73,9 @@ button:focus-visible, textarea:focus-visible, a:focus-visible {
 .run-row.selected { background: var(--surface-raised); }
 .run-row.selected::before { content: ""; position: absolute; width: 5px; height: 5px; right: 9px; top: 12px; background: var(--accent); border-radius: 50%; }
 .run-title { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.run-meta, .run-repo { display: flex; justify-content: space-between; align-items: center; font-size: 9px; color: var(--text-3); }
+.run-meta, .run-repo { display: flex; font-size: 9px; color: var(--text-3); }
+.run-meta { justify-content: space-between; align-items: center; }
+.run-repo { flex-direction: column; align-items: flex-start; gap: 2px; }
 .run-status { display: inline-flex; align-items: center; gap: 5px; font-size: 9px; color: var(--text-2); text-transform: capitalize; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); }
 .run-status.running .status-dot { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 84%); }
