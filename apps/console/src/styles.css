@@ -328,8 +328,11 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
 .publish-card.failed .publish-icon { color: oklch(0.79 0.08 27); background: color-mix(in oklch, var(--danger), transparent 86%); }
 .publish-body { min-width: 0; display: grid; gap: 2px; }
 .publish-body strong { font-size: 11px; }
-.publish-body small { color: var(--text-3); font: 9px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.publish-body code { color: var(--text-2); font: 9px var(--mono); }
+.publish-body small { display: flex; align-items: center; gap: 4px; color: var(--text-3); font: 9px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.publish-body code { color: var(--text-2); font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; }
+.branch-copy { display: inline-grid; place-items: center; flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 1px solid var(--border-soft); border-radius: 5px; background: color-mix(in oklch, var(--surface), transparent 30%); color: var(--text-3); cursor: pointer; transition: color .12s ease, border-color .12s ease, background .12s ease; }
+.branch-copy:hover { color: var(--text); border-color: var(--border); background: var(--surface-raised); }
+.branch-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .publish-links { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .publish-link { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 9px; font-weight: 600; text-decoration: none; }
 .publish-link:hover { background: var(--surface-raised); border-color: oklch(0.39 0.012 142); }
