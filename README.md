@@ -54,8 +54,10 @@ node packages/runner/src/cli.ts run /tmp/spec.json             # execute
 ```
 
 Also accepts inline JSON (`run '{…}'`) or stdin (`… | run`). Use `prompt` for an
-inline prompt instead of `promptFile`, and `"dryRun": true` in the spec. Logs land
-in the `out` dir as one source-tagged JSONL per source (`agent`, `backend`,
+inline prompt instead of `promptFile`, and `"dryRun": true` in the spec. Attach
+`"images": ["./shot.png", "data:image/png;base64,…"]` (file paths or data URLs) to
+stage screenshots into the backend as files the agent can read. Logs land in the
+`out` dir as one source-tagged JSONL per source (`agent`, `backend`,
 `orchestrator`, `workload`).
 
 ## Develop

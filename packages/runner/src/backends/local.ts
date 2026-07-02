@@ -8,8 +8,8 @@
  * exec contract is identical to what the sandbox backend will need.
  */
 import { execFile, spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import type { AgentSessionSettings } from "@automations/core";
@@ -169,6 +169,11 @@ class LocalBackend implements Backend {
 
   async readBytes(path: string, _log: SessionLog): Promise<Buffer> {
     return readFileSync(path);
+  }
+
+  async writeBytes(path: string, bytes: Buffer, _log: SessionLog): Promise<void> {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
   }
 
   async dispose(log: SessionLog): Promise<void> {

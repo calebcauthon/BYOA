@@ -218,6 +218,19 @@ button:focus-visible, textarea:focus-visible, a:focus-visible {
 .prompt-toolbar button { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--text-2); padding: 5px 6px; border-radius: 4px; font-size: 8px; cursor: pointer; }
 .prompt-toolbar button:hover { background: var(--surface-hover); }
 .prompt-count { margin-left: auto; font: 8px var(--mono); }
+/* Prompt image attachments (paste/upload) — shared by new-run toolbar + composer */
+.image-attach { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.image-attach-add { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--text-2); padding: 5px 6px; border-radius: 4px; font-size: 8px; cursor: pointer; }
+.image-attach-add:hover:not(:disabled) { background: var(--surface-hover); }
+.image-attach-add:disabled { color: var(--text-3); cursor: default; }
+.image-attach-hint { color: var(--text-3); font-size: 8px; }
+.image-attach-error { color: var(--danger); font-size: 8px; }
+.image-attach-thumbs { flex-basis: 100%; list-style: none; margin: 0; padding: 0 0 4px; display: flex; flex-wrap: wrap; gap: 6px; }
+.image-attach-thumb { position: relative; width: 44px; height: 44px; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border); }
+.image-attach-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.image-attach-thumb button { position: absolute; top: 2px; right: 2px; display: flex; align-items: center; justify-content: center; width: 15px; height: 15px; padding: 0; border: 0; border-radius: 50%; background: oklch(0.08 0.006 142 / .72); color: #fff; cursor: pointer; }
+.image-attach-thumb button:hover { background: var(--danger); }
+.composer-attachments { padding: 2px 3px 4px; }
 /* Instruction (system prompt) modal */
 .instruction-generate { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .instruction-generate input {

@@ -26,6 +26,7 @@ import { resolveProvider } from "./providers/index.ts";
 import { SessionLog } from "./logging.ts";
 import { writeTimeline } from "./timeline.ts";
 import { publishProtocol } from "./publish.ts";
+import { materializeImages, imagePromptSection, type ImageInput } from "./images.ts";
 
 // Register the adapters that ship with the runner. Importing for side effects.
 import "./backends/local.ts";
@@ -89,6 +90,10 @@ export interface RunSessionInput {
   settings: AgentSessionSettings;
   /** fully-assembled prompt text */
   prompt: string;
+  /** images the operator attached to the prompt — data URLs (console) or file
+   *  paths (CLI). Materialized into the backend so the agent can read them and
+   *  copied into the session dir for the record. */
+  images?: ImageInput[];
   /** directory to write this session's logs + artifacts into */
   outDir: string;
   /** per-principal secrets for this run (LLM key, GitHub token). Resolved by the
@@ -158,12 +163,21 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
   // session.json record that, not just the bare task.
   const startedAt = new Date().toISOString();
   let assembledPrompt = prompt;
+  // Filenames of any attached images, saved under <outDir>/prompt-images/. Filled
+  // in once the images are materialized (after prepare); recorded on the Prompt so
+  // the session record reflects exactly what was attached.
+  let promptImageNames: string[] = [];
   const writeRecord = (status: SessionStatus, extra: Partial<AgentSession> = {}): void => {
     const record: AgentSession = {
       id: sessionId,
       conversationId: "", // assigned by the orchestrator (M2); standalone runs have none
       settings,
-      prompt: { persona: settings.agent, task: prompt, assembled: assembledPrompt },
+      prompt: {
+        persona: settings.agent,
+        task: prompt,
+        ...(promptImageNames.length ? { images: promptImageNames } : {}),
+        assembled: assembledPrompt,
+      },
       status,
       startedAt,
       ...extra,
@@ -228,10 +242,18 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionResu
       }
     }
 
-    // Append the publish protocol ONCE here (it needs the backend's scratchDir),
-    // persist the exact text we send, and hand it to the provider — so the
-    // recorded prompt is the prompt the agent actually got (§2.9).
-    assembledPrompt = `${prompt}${publishProtocol(scratchDir)}`;
+    // Stage any attached images into the backend (so the agent can read them)
+    // and record where they landed for the prompt section + session record.
+    const staged =
+      input.images && input.images.length > 0
+        ? await materializeImages(input.images, backend, scratchDir, outDir, log)
+        : { backendPaths: [], names: [] };
+    promptImageNames = staged.names;
+
+    // Append the image section + publish protocol ONCE here (both need the
+    // backend's scratchDir), persist the exact text we send, and hand it to the
+    // provider — so the recorded prompt is the prompt the agent actually got (§2.9).
+    assembledPrompt = `${prompt}${imagePromptSection(staged.backendPaths)}${publishProtocol(scratchDir)}`;
     writeFileSync(join(outDir, "prompt.md"), assembledPrompt, "utf8");
 
     output = await provider.run({ settings, backend, workdir, prompt: assembledPrompt, scratchDir, clockOffsetMs, credentials, log });

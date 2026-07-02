@@ -90,6 +90,9 @@ export interface StartSessionInput {
   prompt?: string;
   persona?: string;
   task?: string;
+  /** images the operator attached to the prompt — data URLs the runner
+   *  materializes into the backend so the agent can read them. */
+  images?: string[];
   /** after the session finishes, the orchestrator pushes + opens/updates the PR
    *  and posts the agent's publish content (§4.4). Opt-in: outward + irreversible. */
   publish?: boolean;
@@ -202,7 +205,7 @@ function launchSession(
     inFlight -= 1;
   };
 
-  void runSession({ sessionId, settings, prompt, outDir, ...(credentials ? { credentials } : {}), ...(afterWork ? { afterWork } : {}) })
+  void runSession({ sessionId, settings, prompt, outDir, ...(input.images && input.images.length > 0 ? { images: input.images } : {}), ...(credentials ? { credentials } : {}), ...(afterWork ? { afterWork } : {}) })
     .then((res) => {
       emit(convId, "session_finished", sessionId, { output: res.output });
       if (input.publish) {

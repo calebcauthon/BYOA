@@ -383,6 +383,10 @@ class DaytonaBackend implements Backend {
     return this.box().fs.downloadFile(path);
   }
 
+  async writeBytes(path: string, bytes: Buffer, _log: SessionLog): Promise<void> {
+    await this.box().fs.uploadFile(bytes, path);
+  }
+
   async dispose(log: SessionLog): Promise<void> {
     // Both runSession's finally and the shutdown sweep may arrive together.
     // Share the in-flight deletion rather than returning early and letting
