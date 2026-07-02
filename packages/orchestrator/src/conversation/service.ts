@@ -14,6 +14,7 @@ import type {
   AgentSession,
   AgentSessionSettings,
   Conversation,
+  Credentials,
   Event,
   EventType,
   Target,
@@ -21,7 +22,7 @@ import type {
 import { publish as ghPublish, type PublishOutcome } from "../github/liaison.ts";
 import {
   appendEvent,
-  getConversation,
+  getOwnedConversation,
   listConversations,
   readEvents,
   saveConversation,
@@ -29,6 +30,21 @@ import {
 } from "../state/store.ts";
 import { buildTimeline } from "../logs/timeline.ts";
 import { readJSONFile } from "./read.ts";
+
+// Global concurrency cap (docs/saas-plan.md Phase 1.5). Each launched run holds a
+// sandbox; unbounded launches on pooled Daytona = unbounded cost + quota
+// exhaustion. 0 (default) = unlimited, so single-operator local runs are
+// unaffected; hosted sets a real ceiling. Per-user caps come with accounts.
+const MAX_CONCURRENT = Number(process.env.AUTOMATIONS_MAX_CONCURRENT_SESSIONS ?? 0);
+  let inFlight = 0;
+
+/** Thrown when a launch would exceed the concurrency cap; surfaces as a 4xx. */
+export class AtCapacityError extends Error {
+  constructor(limit: number) {
+    super(`at capacity: ${limit} concurrent session(s) already running — try again shortly`);
+    this.name = "AtCapacityError";
+  }
+}
 
 function id(prefix: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -52,10 +68,11 @@ function assemble(parts: { persona?: string | undefined; task: string; carryCont
   return [parts.persona, parts.carryContext, parts.task].filter(Boolean).join("\n\n");
 }
 
-export function createConversation(input: { title: string; target: Target }): Conversation {
+export function createConversation(ownerUserId: string, input: { title: string; target: Target }): Conversation {
   const now = new Date().toISOString();
   const conv: Conversation = {
     id: id("conv"),
+    ownerUserId,
     title: input.title,
     target: input.target,
     sessionIds: [],
@@ -81,19 +98,40 @@ export interface StartSessionInput {
   qaReview?: boolean;
 }
 
-export function startSession(convId: string, input: StartSessionInput): { sessionId: string } {
-  const conv = getConversation(convId);
+// `credentials` are resolved by the caller's Identity adapter (never from the
+// request body — secrets must not be client-supplied) and threaded into the run
+// + the publish token. Omitted for callers that rely on host fallbacks.
+export function startSession(
+  ownerUserId: string,
+  convId: string,
+  input: StartSessionInput,
+  credentials?: Credentials,
+  refreshCredentials?: () => Promise<Credentials>,
+): { sessionId: string } {
+  const conv = getOwnedConversation(convId, ownerUserId);
   if (!conv) throw new Error(`unknown conversation ${convId}`);
-  return launchSession(convId, input, conv.target);
+  return launchSession(ownerUserId, convId, input, conv.target, credentials, refreshCredentials);
 }
 
 // Shared session launcher. `target` is the checkout this session runs against —
 // usually the conversation's, but the chained QA session overrides it to clone
 // the branch the coding agent just pushed. A QA session is an ordinary session:
 // same agent, same settings — only the prompt (and its target) differ.
-function launchSession(convId: string, input: StartSessionInput, target: Target): { sessionId: string } {
-  const conv = getConversation(convId);
+function launchSession(
+  ownerUserId: string,
+  convId: string,
+  input: StartSessionInput,
+  target: Target,
+  credentials?: Credentials,
+  refreshCredentials?: () => Promise<Credentials>,
+): { sessionId: string } {
+  const conv = getOwnedConversation(convId, ownerUserId);
   if (!conv) throw new Error(`unknown conversation ${convId}`);
+
+  // Capacity check BEFORE any state mutation, so a rejected launch leaves
+  // nothing half-created. There are no awaits between this check and the
+  // reservation below, so another launch cannot interleave in this process.
+  if (MAX_CONCURRENT > 0 && inFlight >= MAX_CONCURRENT) throw new AtCapacityError(MAX_CONCURRENT);
 
   const sessionId = id("sess");
   const settings: AgentSessionSettings = { ...input.settings, target };
@@ -127,12 +165,24 @@ function launchSession(convId: string, input: StartSessionInput, target: Target)
         // branch if one was created, else the cloned branch) and open the PR
         // against the cloned base. For local the target branch is the push branch.
         const target = conv.target;
-        const branch = target.kind === "remote" ? target.newBranch ?? target.branch : target.branch;
+        const branch = target.newBranch ?? target.branch;
         const base = target.kind === "remote" ? target.branch : undefined;
         publishBranch = branch;
         try {
+          // GitHub App installation tokens last one hour. Refresh immediately
+          // before push/PR work so a long-running agent never publishes with
+          // the token snapshot used to clone at launch.
+          const publishCredentials = refreshCredentials ? await refreshCredentials() : credentials;
           outcome = await ghPublish(
-            { backend: ctx.backend, workdir: ctx.workdir, branch, ...(base ? { base } : {}), result },
+            {
+              backend: ctx.backend,
+              workdir: ctx.workdir,
+              branch,
+              ...(base ? { base } : {}),
+              ...(target.kind === "remote" ? { repo: target.repo } : {}),
+              ...(publishCredentials?.githubToken ? { token: publishCredentials.githubToken } : {}),
+              result,
+            },
             ctx.log,
           );
         } catch (err) {
@@ -142,7 +192,17 @@ function launchSession(convId: string, input: StartSessionInput, target: Target)
       }
     : undefined;
 
-  void runSession({ sessionId, settings, prompt, outDir, ...(afterWork ? { afterWork } : {}) })
+  // Reserve only after synchronous setup succeeds; otherwise a filesystem or
+  // state-store exception would permanently consume a capacity slot.
+  inFlight += 1;
+  let slotHeld = true;
+  const releaseSlot = (): void => {
+    if (!slotHeld) return;
+    slotHeld = false;
+    inFlight -= 1;
+  };
+
+  void runSession({ sessionId, settings, prompt, outDir, ...(credentials ? { credentials } : {}), ...(afterWork ? { afterWork } : {}) })
     .then((res) => {
       emit(convId, "session_finished", sessionId, { output: res.output });
       if (input.publish) {
@@ -151,13 +211,19 @@ function launchSession(convId: string, input: StartSessionInput, target: Target)
         if (outcome?.pushed) emit(convId, "published", sessionId, { ...outcome, ...(publishBranch ? { branch: publishBranch } : {}) });
         else emit(convId, "publish_failed", sessionId, outcome ? { ...outcome, ...(publishBranch ? { branch: publishBranch } : {}) } : { error: publishError ?? "unknown" });
       }
+      // The primary backend has been disposed by runSession at this point.
+      // Release its capacity before attempting to reserve a slot for chained QA.
+      releaseSlot();
       // Chain a QA session once the coding work is on a branch we can clone. The
       // QA session's own input carries no qaReview, so it never re-chains.
       if (input.qaReview) {
-        chainQa(convId, input, { pushed: outcome?.pushed === true, branch: publishBranch });
+        chainQa(ownerUserId, convId, input, { pushed: outcome?.pushed === true, branch: publishBranch }, credentials, refreshCredentials);
       }
     })
-    .catch((err) => emit(convId, "session_failed", sessionId, { error: String(err) }));
+    .catch((err) => {
+      releaseSlot();
+      emit(convId, "session_failed", sessionId, { error: String(err) });
+    });
 
   return { sessionId };
 }
@@ -182,8 +248,15 @@ function qaPrompt(task: string, branch: string): string {
 // Auto-start a QA session that clones the just-pushed branch and screenshots the
 // feature. Requires a remote target and a successful push (the coding sandbox is
 // already gone, so the work has to be reachable on the remote).
-function chainQa(convId: string, codingInput: StartSessionInput, push: { pushed: boolean; branch: string | undefined }): void {
-  const conv = getConversation(convId);
+function chainQa(
+  ownerUserId: string,
+  convId: string,
+  codingInput: StartSessionInput,
+  push: { pushed: boolean; branch: string | undefined },
+  credentials?: Credentials,
+  refreshCredentials?: () => Promise<Credentials>,
+): void {
+  const conv = getOwnedConversation(convId, ownerUserId);
   if (!conv) return;
   if (conv.target.kind !== "remote") {
     emit(convId, "qa_skipped", undefined, { reason: "QA review needs a GitHub target — it clones the pushed branch" });
@@ -195,8 +268,15 @@ function chainQa(convId: string, codingInput: StartSessionInput, push: { pushed:
   }
   const target: Target = { kind: "remote", repo: conv.target.repo, branch: push.branch };
   // Same agent and settings as the coding session — only the prompt (and the
-  // branch it clones) differ. "QA" is a prompt, not an agent type.
-  launchSession(convId, { settings: codingInput.settings, prompt: qaPrompt(codingInput.task ?? "", push.branch) }, target);
+  // branch it clones) differ. "QA" is a prompt, not an agent type. Runs inside the
+  // primary run's .then, so swallow a capacity rejection as qa_skipped rather than
+  // letting it surface as a failure of the (already-finished) coding session.
+  try {
+    launchSession(ownerUserId, convId, { settings: codingInput.settings, prompt: qaPrompt(codingInput.task ?? "", push.branch) }, target, credentials, refreshCredentials);
+  } catch (err) {
+    if (err instanceof AtCapacityError) emit(convId, "qa_skipped", undefined, { reason: err.message });
+    else throw err;
+  }
 }
 
 export interface RenderedConversation {
@@ -206,8 +286,8 @@ export interface RenderedConversation {
   timeline: ReturnType<typeof buildTimeline>;
 }
 
-export function renderConversation(convId: string): RenderedConversation | null {
-  const conversation = getConversation(convId);
+export function renderConversation(ownerUserId: string, convId: string): RenderedConversation | null {
+  const conversation = getOwnedConversation(convId, ownerUserId);
   if (!conversation) return null;
   const events = readEvents(convId);
   const started = new Map<string, Event>();
@@ -255,6 +335,6 @@ export function renderConversation(convId: string): RenderedConversation | null 
   };
 }
 
-export function list(): Conversation[] {
-  return listConversations();
+export function list(ownerUserId: string): Conversation[] {
+  return listConversations(ownerUserId);
 }

@@ -21,7 +21,9 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Terminal,
+  Trash2,
   Wrench,
   X,
 } from "lucide-react";
@@ -30,7 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 type RunState = "running" | "ready" | "failed" | "queued" | "stopped";
 type BackendKind = "local" | "container" | "daytona";
 type ProviderKind = "pi" | "claude-subscription" | "codex";
-type Target = { kind: "local"; repoPath: string; branch: string } | { kind: "remote"; repo: string; issue?: number; branch: string; newBranch?: string };
+type Target = { kind: "local"; repoPath: string; branch: string; newBranch?: string } | { kind: "remote"; repo: string; issue?: number; branch: string; newBranch?: string };
 
 interface AgentSessionSettings {
   backend: string;
@@ -130,6 +132,27 @@ interface LaunchForm {
   qaReview: boolean;
 }
 
+interface RobotPreset {
+  id: string;
+  name: string;
+  provider: ProviderKind;
+  model: string;
+  backend: BackendKind;
+  agent: string;
+  skills: string[];
+  /** id of the default instruction (system prompt) this robot remembers, if any */
+  instructionId?: string;
+}
+
+/** A named, reusable system prompt — server-owned (see @automations/core Instruction). */
+interface Instruction {
+  id: string;
+  name: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface LocalRecent {
   path: string;
   selectedAt: string;
@@ -213,13 +236,110 @@ const fallbackOptions: OptionsPayload = {
   skills: [{ id: "browser", requires: { backendCapabilities: ["browser"] } }],
 };
 
+const ROBOT_PRESETS_KEY = "console.robotPresets";
+
+function loadRobotPresets(): RobotPreset[] {
+  try {
+    const raw = localStorage.getItem(ROBOT_PRESETS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRobotPresets(presets: RobotPreset[]) {
+  try {
+    localStorage.setItem(ROBOT_PRESETS_KEY, JSON.stringify(presets));
+  } catch {
+    // storage unavailable (private mode, quota, etc.) — presets stay in-memory for this session
+  }
+}
+
+const ACTIVE_ROBOT_PRESET_KEY = "console.activeRobotPresetId";
+const CODE_SETTINGS_KEY = "console.codeSettings";
+
+type SavedCodeSettings = Pick<
+  LaunchForm,
+  "targetKind" | "repoPath" | "org" | "repo" | "issue" | "branch" | "newBranch" | "branchName" | "publish"
+>;
+
+function loadCodeSettings(): SavedCodeSettings | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CODE_SETTINGS_KEY) ?? "null") as Partial<SavedCodeSettings> | null;
+    if (!parsed || (parsed.targetKind !== "local" && parsed.targetKind !== "remote")) return null;
+    return {
+      targetKind: parsed.targetKind,
+      repoPath: typeof parsed.repoPath === "string" ? parsed.repoPath : "",
+      org: typeof parsed.org === "string" ? parsed.org : "",
+      repo: typeof parsed.repo === "string" ? parsed.repo : "",
+      issue: typeof parsed.issue === "string" ? parsed.issue : "",
+      branch: typeof parsed.branch === "string" && parsed.branch ? parsed.branch : "main",
+      newBranch: typeof parsed.newBranch === "boolean" ? parsed.newBranch : true,
+      branchName: typeof parsed.branchName === "string" && parsed.branchName ? parsed.branchName : "auto/m4-console-run",
+      publish: typeof parsed.publish === "boolean" ? parsed.publish : true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveCodeSettings(form: LaunchForm): void {
+  try {
+    const saved: SavedCodeSettings = {
+      targetKind: form.targetKind,
+      repoPath: form.repoPath,
+      org: form.org,
+      repo: form.repo,
+      issue: form.issue,
+      branch: form.branch,
+      newBranch: form.newBranch,
+      branchName: form.branchName,
+      publish: form.publish,
+    };
+    localStorage.setItem(CODE_SETTINGS_KEY, JSON.stringify(saved));
+  } catch {
+    // Storage can be unavailable in private browsing; the current run still works.
+  }
+}
+
+function loadActiveRobotPresetId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_ROBOT_PRESET_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveRobotPresetId(id: string | null) {
+  try {
+    if (id) localStorage.setItem(ACTIVE_ROBOT_PRESET_KEY, id);
+    else localStorage.removeItem(ACTIVE_ROBOT_PRESET_KEY);
+  } catch {
+    // storage unavailable — active preset just won't survive a reload this session
+  }
+}
+
+function modelShort(model: string): string {
+  return model.split("/").pop() || model;
+}
+
+// Primary-action copy is derived from the run contract, not hard-coded into the
+// button. Add future run intents (for example, answer-only) here as their form
+// variables become explicit.
+function runActionCopy(form: LaunchForm): { idle: string; busy: string } {
+  if (form.publish) return { idle: "Draft PR", busy: "Drafting PR…" };
+  if (form.qaReview) return { idle: "Run QA", busy: "Running QA…" };
+  return { idle: "Run agent", busy: "Starting agent…" };
+}
+
 function targetLabel(target: Target): string {
   if (target.kind === "local") return target.repoPath.split("/").filter(Boolean).at(-1) ?? target.repoPath;
   return target.issue ? `${target.repo} #${target.issue}` : target.repo;
 }
 
 function targetBranch(target: Target): string {
-  return target.branch;
+  return target.newBranch ?? target.branch;
 }
 
 function providerLabel(provider: string): string {
@@ -291,6 +411,7 @@ const PUBLISH_SKIP_LABEL: Record<string, string> = {
   "head-equals-base": "no PR — head equals base",
   "no-change": "agent made no changes",
   "no-origin": "checkout has no GitHub origin",
+  "origin-mismatch": "checkout origin did not match the selected repository",
   "no-token": "no GitHub token (gh auth)",
   "push-failed": "push failed",
   "pr-failed": "PR creation failed",
@@ -313,10 +434,15 @@ function SessionArtifacts({ conversationId, sessionId, artifacts }: { conversati
   );
 }
 
-function PublishCard({ event }: { event: EventRecord }) {
+function PublishCard({ event, target }: { event: EventRecord; target: Target }) {
   const data = event.data ?? {};
   const pushed = data.pushed === true;
   const branch = typeof data.branch === "string" ? data.branch : undefined;
+  const branchUrl = typeof data.branchUrl === "string"
+    ? data.branchUrl
+    : pushed && branch && target.kind === "remote"
+      ? `https://github.com/${target.repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`
+      : undefined;
   const prUrl = typeof data.prUrl === "string" ? data.prUrl : undefined;
   const comments = typeof data.commentsPosted === "number" ? data.commentsPosted : 0;
   const skipped = typeof data.skipped === "string" ? data.skipped : undefined;
@@ -339,7 +465,12 @@ function PublishCard({ event }: { event: EventRecord }) {
         <strong>{failed ? "Publish failed" : prUrl ? "Opened draft PR" : pushed ? "Pushed branch" : "Nothing published"}</strong>
         <small>{branch && <code>{branch}</code>}{branch && detail ? " · " : ""}{detail}</small>
       </div>
-      {prUrl && <a className="publish-link" href={prUrl} target="_blank" rel="noreferrer">View PR <ArrowUpRight size={12} /></a>}
+      {(branchUrl || prUrl) && (
+        <div className="publish-links">
+          {branchUrl && <a className="publish-link" href={branchUrl} target="_blank" rel="noreferrer">View branch <ArrowUpRight size={12} /></a>}
+          {prUrl && <a className="publish-link" href={prUrl} target="_blank" rel="noreferrer">View PR <ArrowUpRight size={12} /></a>}
+        </div>
+      )}
     </div>
   );
 }
@@ -429,6 +560,36 @@ function FieldSelect<T extends string>({
         <small>{label}</small>
         <select value={value} onChange={(event) => onChange(event.target.value as T)}>
           {options.map((option) => <option value={option} key={option}>{render ? render(option) : option}</option>)}
+        </select>
+      </span>
+      <ChevronDown size={13} />
+    </label>
+  );
+}
+
+// Like FieldSelect, but maps instruction id → name (value differs from label) and
+// carries a "None" choice. Used for the run's system prompt and a robot's default.
+function InstructionSelect({
+  label,
+  value,
+  instructions,
+  onChange,
+}: {
+  label: string;
+  value: string | null;
+  instructions: Instruction[];
+  onChange: (id: string | null) => void;
+}) {
+  return (
+    <label className="field-button field-input">
+      <span className="field-icon"><FileCode2 size={14} /></span>
+      <span>
+        <small>{label}</small>
+        <select value={value ?? ""} onChange={(event) => onChange(event.target.value || null)}>
+          <option value="">None</option>
+          {instructions.map((instruction) => (
+            <option value={instruction.id} key={instruction.id}>{instruction.name}</option>
+          ))}
         </select>
       </span>
       <ChevronDown size={13} />
@@ -735,6 +896,7 @@ function IssuesPanel({ repo, onUse }: { repo: string; onUse: (issue: GithubIssue
 interface GithubOrgsPayload {
   orgs: string[];
   lastOrg: string | null;
+  connectedOwners?: string[];
 }
 interface GithubReposPayload {
   org: string;
@@ -760,6 +922,7 @@ function GithubTargetPicker({
   onChange: (next: Partial<LaunchForm>) => void;
 }) {
   const [orgs, setOrgs] = useState<string[]>([]);
+  const [connectedOwners, setConnectedOwners] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
   const [newOrg, setNewOrg] = useState("");
   const [savingOrg, setSavingOrg] = useState(false);
@@ -767,6 +930,11 @@ function GithubTargetPicker({
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const onChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   useEffect(() => {
     let active = true;
@@ -774,9 +942,13 @@ function GithubTargetPicker({
       .then((payload) => {
         if (!active) return;
         setOrgs(payload.orgs);
+        setConnectedOwners(payload.connectedOwners ?? []);
         if (payload.orgs.length === 0) setAdding(true);
         if (!org) {
-          const fallback = payload.lastOrg ?? (payload.orgs.length === 1 ? payload.orgs[0] : "");
+          // Hosted SSO can return several organizations and has no host-local
+          // "last used" value yet. Select the first imported owner so the form
+          // is useful immediately instead of showing an empty selector.
+          const fallback = payload.lastOrg ?? payload.orgs[0] ?? "";
           if (fallback) onChange({ org: fallback, repo: "" });
         }
       })
@@ -785,7 +957,7 @@ function GithubTargetPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadRepos = useCallback((targetOrg: string, refresh = false) => {
+  const loadRepos = useCallback((targetOrg: string, refresh = false, selectFirst = false) => {
     if (!targetOrg) { setRepos([]); setFetchedAt(null); return; }
     setLoadingRepos(true);
     setError(null);
@@ -794,12 +966,17 @@ function GithubTargetPicker({
         setRepos(payload.repos);
         setFetchedAt(payload.fetchedAt);
         setError(payload.error ?? null);
+        // GitHub returns the accessible repository set for this installation.
+        // Start with the first stable (alphabetically sorted) option only when
+        // the caller asked to (selectFirst) — i.e. the user has not already
+        // chosen or typed a repository, and this is not a manual refresh.
+        if (selectFirst && payload.repos[0]) onChangeRef.current({ repo: payload.repos[0] });
       })
       .catch((err) => { setRepos([]); setError(String(err)); })
       .finally(() => setLoadingRepos(false));
   }, []);
 
-  useEffect(() => { loadRepos(org); }, [org, loadRepos]);
+  useEffect(() => { loadRepos(org, false, !repo); }, [org, loadRepos]);
 
   const saveOrg = async () => {
     const value = newOrg.trim();
@@ -821,6 +998,7 @@ function GithubTargetPicker({
 
   const shortName = (full: string) => (org && full.startsWith(`${org}/`) ? full.slice(org.length + 1) : full);
   const repoName = shortName(repo);
+  const repoOptions = repos.map(shortName);
   const setRepoName = (value: string) => {
     const trimmed = value.trim();
     onChange({ repo: !trimmed ? "" : trimmed.includes("/") || !org ? trimmed : `${org}/${trimmed}` });
@@ -845,27 +1023,310 @@ function GithubTargetPicker({
         />
       )}
       <div className="github-repo-row">
-        <FieldInput
+        <FieldSelect
           label={loadingRepos ? "Repository · loading…" : "Repository"}
           value={repoName}
           onChange={setRepoName}
           icon={<FolderGit2 size={14} />}
-          placeholder={org ? "repository" : "owner/name"}
-          list="github-repos"
+          options={repoOptions}
         />
-        <datalist id="github-repos">
-          {repos.map((r) => <option value={shortName(r)} key={r} />)}
-        </datalist>
         <button className="org-icon-button" aria-label="Refresh repositories" title="Refresh repository list" disabled={!org || loadingRepos} onClick={() => loadRepos(org, true)}>
           <RefreshCw size={13} className={loadingRepos ? "spin" : ""} />
         </button>
       </div>
       {error ? (
-        <p className="config-note github-error">{error}</p>
+        <div>
+          <p className="config-note github-error">{error}</p>
+          {!connectedOwners.some((owner) => owner.toLowerCase() === org.toLowerCase()) ? (
+            <a className="secondary-button github-connect" href={`${API_BASE}/api/github/install`}>
+              <Github size={13} /> Connect repositories
+            </a>
+          ) : null}
+        </div>
       ) : fetchedAt ? (
         <p className="config-note">{repos.length} repos · daytona backend clones the target</p>
       ) : (
         <p className="config-note">GitHub targets clone in the daytona backend.</p>
+      )}
+    </div>
+  );
+}
+
+const HOLD_TO_EDIT_MS = 1200;
+const HOLD_REVEAL_MS = 250;
+const CURRENT_ROBOT_PROMPT = "__current-robot__";
+
+function RobotTile({
+  preset,
+  active,
+  options,
+  instructions,
+  onApply,
+  onUpdate,
+  onRemove,
+  onManageInstruction,
+}: {
+  preset: RobotPreset;
+  active: boolean;
+  options: OptionsPayload;
+  instructions: Instruction[];
+  onApply: () => void;
+  onUpdate: (next: RobotPreset) => void;
+  onRemove: () => void;
+  onManageInstruction: (presetId: string, instructionId: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [holdRatio, setHoldRatio] = useState(0);
+  const [draft, setDraft] = useState<RobotPreset>(preset);
+  const holdRaf = useRef<number | null>(null);
+  const heldRef = useRef(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!editing) setDraft(preset);
+  }, [preset, editing]);
+
+  useEffect(() => {
+    if (!editing) return;
+    const handler = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setEditing(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [editing]);
+
+  const stopHold = () => {
+    if (holdRaf.current !== null) cancelAnimationFrame(holdRaf.current);
+    holdRaf.current = null;
+    setHoldRatio(0);
+  };
+
+  const startHold = () => {
+    heldRef.current = false;
+    const start = performance.now();
+    const tick = () => {
+      const elapsed = performance.now() - start;
+      const ratio = Math.min(1, elapsed / HOLD_TO_EDIT_MS);
+      setHoldRatio(elapsed >= HOLD_REVEAL_MS ? ratio : 0);
+      if (ratio >= 1) {
+        heldRef.current = true;
+        holdRaf.current = null;
+        setDraft(preset);
+        setEditing(true);
+        setHoldRatio(0);
+        return;
+      }
+      holdRaf.current = requestAnimationFrame(tick);
+    };
+    holdRaf.current = requestAnimationFrame(tick);
+  };
+
+  const handlePointerUp = () => {
+    const wasHeldToEdit = heldRef.current;
+    stopHold();
+    if (!wasHeldToEdit) onApply();
+  };
+
+  const draftProviderModels = options.providers.find((p) => p.id === draft.provider)?.models ?? [draft.model];
+
+  const save = () => {
+    if (!draft.name.trim()) return;
+    onUpdate({ ...draft, name: draft.name.trim() });
+    setEditing(false);
+  };
+
+  const remove = () => {
+    setEditing(false);
+    onRemove();
+  };
+
+  return (
+    <div className="robot-tile-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={`robot-tile ${active ? "active" : ""}`}
+        title={`${preset.name} · ${modelShort(preset.model)}`}
+        onPointerDown={startHold}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={stopHold}
+        onPointerCancel={stopHold}
+      >
+        <span
+          className="robot-tile-remove"
+          role="button"
+          tabIndex={-1}
+          aria-label={`Remove preset ${preset.name}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove();
+          }}
+        >
+          <X size={9} />
+        </span>
+        <span className="robot-tile-icon"><Bot size={14} /></span>
+        <strong>{preset.name}</strong>
+        <small>{modelShort(preset.model)}</small>
+        {holdRatio > 0 && <span className="robot-tile-hold" style={{ transform: `scaleX(${holdRatio})` }} />}
+      </button>
+      {!editing && <span className="robot-tile-hint">Hold to edit</span>}
+      {editing && (
+        <div className="robot-editor" role="dialog" aria-label={`Edit ${preset.name}`}>
+          <div className="config-block-head"><h3>Edit preset</h3><p>Update the saved agent configuration.</p></div>
+          <div className="field-grid single-field">
+            <FieldInput label="Preset name" value={draft.name} onChange={(name) => setDraft((d) => ({ ...d, name }))} icon={<Bot size={14} />} />
+          </div>
+          <div className="field-grid runtime-fields">
+            <FieldSelect label="Provider" value={draft.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => setDraft((d) => ({ ...d, provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? d.model }))} icon={<Bot size={14} />} />
+            <FieldSelect label="Model" value={draft.model} options={draftProviderModels} onChange={(model) => setDraft((d) => ({ ...d, model }))} icon={<Bot size={14} />} />
+            <FieldSelect label="Backend" value={draft.backend} options={options.backends} onChange={(backend) => setDraft((d) => ({ ...d, backend }))} icon={<Cloud size={14} />} />
+            <FieldInput label="Agent" value={draft.agent} onChange={(agent) => setDraft((d) => ({ ...d, agent }))} icon={<Bot size={14} />} />
+          </div>
+          <div className="skill-row">
+            <span className="field-label">Skills</span>
+            {draft.skills.map((skill) => (
+              <span className="skill-chip" key={skill}><Link2 size={11} />{skill}<button aria-label={`Remove ${skill}`} onClick={() => setDraft((d) => ({ ...d, skills: d.skills.filter((s) => s !== skill) }))}><X size={10} /></button></span>
+            ))}
+            <button className="add-skill" onClick={() => setDraft((d) => (d.skills.includes("browser") ? d : { ...d, skills: [...d.skills, "browser"] }))}><Plus size={11} /> Add skill</button>
+          </div>
+          <button
+            type="button"
+            className="robot-prompt-row"
+            onClick={() => {
+              setEditing(false);
+              onManageInstruction(preset.id, draft.instructionId ?? null);
+            }}
+          >
+            <span className="robot-prompt-icon"><FileCode2 size={14} /></span>
+            <span>
+              <small>Prompt</small>
+              <strong>
+                {instructions.find((instruction) => instruction.id === draft.instructionId)?.name ?? "No system prompt"}
+              </strong>
+            </span>
+            <span className="robot-prompt-action">{draft.instructionId ? "Edit" : "Create"} <ChevronRight size={13} /></span>
+          </button>
+          <div className="robot-editor-save">
+            <button className="secondary-button robot-editor-delete" onClick={remove}><X size={12} /> Delete</button>
+            <button className="org-save" disabled={!draft.name.trim()} onClick={save}>Save</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentSettingsTile({
+  form,
+  patch,
+  skills,
+  setSkills,
+  options,
+  providerModels,
+  backendOptions,
+  isMatchedPreset,
+  hasPresets,
+  onSavePreset,
+  instructions,
+  instructionId,
+  onManageInstruction,
+}: {
+  form: LaunchForm;
+  patch: (next: Partial<LaunchForm>) => void;
+  skills: string[];
+  setSkills: (updater: (current: string[]) => string[]) => void;
+  options: OptionsPayload;
+  providerModels: string[];
+  backendOptions: BackendKind[];
+  isMatchedPreset: boolean;
+  hasPresets: boolean;
+  onSavePreset: (name: string) => void;
+  instructions: Instruction[];
+  instructionId: string | null;
+  onManageInstruction: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [presetName, setPresetName] = useState("");
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const save = () => {
+    const name = presetName.trim();
+    if (!name) return;
+    onSavePreset(name);
+    setPresetName("");
+  };
+
+  return (
+    <div className="robot-tile-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={`robot-tile robot-tile-edit ${hasPresets ? "robot-tile-add" : ""} ${open ? "open" : ""} ${!hasPresets && isMatchedPreset ? "active" : ""}`}
+        onClick={() => setOpen((v) => !v)}
+        aria-label={hasPresets ? "Add a new agent preset" : "Agent settings"}
+      >
+        {hasPresets ? (
+          <Plus size={20} />
+        ) : (
+          <>
+            <span className="robot-tile-icon"><Bot size={14} /></span>
+            <strong>{providerLabel(form.provider)}</strong>
+            <small>{modelShort(form.model)}</small>
+          </>
+        )}
+      </button>
+      {open && (
+        <div className="robot-editor" role="dialog" aria-label="Agent settings">
+          <div className="config-block-head"><h3>Agent</h3><p>How and where the agent runs.</p></div>
+          <div className="field-grid runtime-fields">
+            <FieldSelect label="Provider" value={form.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => patch({ provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? form.model })} icon={<Bot size={14} />} />
+            <FieldSelect label="Model" value={form.model} options={providerModels} onChange={(model) => patch({ model })} icon={<Bot size={14} />} />
+            <FieldSelect label="Backend" value={form.backend} options={backendOptions} onChange={(backend) => patch({ backend })} icon={<Cloud size={14} />} />
+            <FieldInput label="Agent" value={form.agent} onChange={(agent) => patch({ agent })} icon={<Bot size={14} />} />
+          </div>
+          <div className="skill-row">
+            <span className="field-label">Skills</span>
+            {skills.map((skill) => (
+              <span className="skill-chip" key={skill}><Link2 size={11} />{skill}<button aria-label={`Remove ${skill}`} onClick={() => setSkills((current) => current.filter((item) => item !== skill))}><X size={10} /></button></span>
+            ))}
+            <button className="add-skill" onClick={() => setSkills((current) => current.includes("browser") ? current : [...current, "browser"])}><Plus size={11} /> Add skill</button>
+          </div>
+          <button
+            type="button"
+            className="robot-prompt-row"
+            onClick={() => {
+              setOpen(false);
+              onManageInstruction();
+            }}
+          >
+            <span className="robot-prompt-icon"><FileCode2 size={14} /></span>
+            <span>
+              <small>Prompt</small>
+              <strong>
+                {instructions.find((instruction) => instruction.id === instructionId)?.name ?? "No system prompt"}
+              </strong>
+            </span>
+            <span className="robot-prompt-action">{instructionId ? "Edit" : "Create"} <ChevronRight size={13} /></span>
+          </button>
+          <div className="robot-editor-save">
+            <input
+              value={presetName}
+              onChange={(event) => setPresetName(event.target.value)}
+              placeholder="Save as preset…"
+              aria-label="Preset name"
+              onKeyDown={(event) => { if (event.key === "Enter") save(); }}
+            />
+            <button className="org-save" disabled={!presetName.trim()} onClick={save}>Save</button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -877,9 +1338,18 @@ function NewRunView({
   initial,
 }: {
   options: OptionsPayload;
-  onLaunch: (form: LaunchForm) => Promise<void>;
+  onLaunch: (form: LaunchForm, persona?: string) => Promise<void>;
   initial?: Partial<LaunchForm> | undefined;
 }) {
+  const [presets, setPresets] = useState<RobotPreset[]>(() => loadRobotPresets());
+  const [activePresetId, setActivePresetId] = useState<string | null>(() => {
+    const id = loadActiveRobotPresetId();
+    return id && presets.some((preset) => preset.id === id) ? id : null;
+  });
+  const lastUsedPreset = activePresetId ? presets.find((preset) => preset.id === activePresetId) : undefined;
+  const [savedCodeSettings] = useState<SavedCodeSettings | null>(() => initial ? null : loadCodeSettings());
+  const [codeDefaultsReady, setCodeDefaultsReady] = useState(() => !!initial || !!savedCodeSettings);
+
   const [form, setForm] = useState<LaunchForm>(() => ({
     title: "New agent run",
     targetKind: "local",
@@ -890,38 +1360,307 @@ function NewRunView({
     branch: "main",
     newBranch: true,
     branchName: "auto/m4-console-run",
-    provider: "pi",
-    model: options.providers[0]?.models[0] ?? "anthropic/claude-haiku-4.5",
-    backend: "local",
-    agent: "generic",
+    provider: lastUsedPreset?.provider ?? "pi",
+    model: lastUsedPreset?.model ?? options.providers[0]?.models[0] ?? "anthropic/claude-haiku-4.5",
+    backend: lastUsedPreset?.backend ?? (savedCodeSettings?.targetKind === "remote" ? "daytona" : "local"),
+    agent: lastUsedPreset?.agent ?? "generic",
     prompt: "",
     publish: true,
     qaReview: false,
+    ...(savedCodeSettings ?? {}),
     ...initial,
   }));
-  const [skills, setSkills] = useState(["browser"]);
+  const [skills, setSkills] = useState(() => (!initial && lastUsedPreset ? [...lastUsedPreset.skills] : ["browser"]));
+  // The base branch we last auto-seeded from a repo's default, so a repo switch can
+  // overwrite our own guess but never a base branch the operator typed by hand.
+  const autoBranchRef = useRef<string | null>(null);
+
+  // Instruction (system prompt) library — server-owned. `instructionBody` is the
+  // live text sent as the run's persona; it diverges from the saved copy once
+  // edited or generated, until re-saved.
+  const [instructions, setInstructions] = useState<Instruction[]>([]);
+  const [selectedInstructionId, setSelectedInstructionId] = useState<string | null>(lastUsedPreset?.instructionId ?? null);
+  const [instructionBody, setInstructionBody] = useState("");
+  const [instructionName, setInstructionName] = useState("");
+  const [genDescription, setGenDescription] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [instructionModalPresetId, setInstructionModalPresetId] = useState<string | null>(null);
+  const [instructionModalOriginalId, setInstructionModalOriginalId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (codeDefaultsReady) return;
+    let active = true;
+    const bootstrapGithub = async () => {
+      try {
+        const organizations = await api<GithubOrgsPayload>("/api/github/orgs");
+        const org = organizations.lastOrg ?? organizations.orgs[0];
+        if (!org) return;
+        const repositories = await api<GithubReposPayload>(`/api/github/repos?org=${encodeURIComponent(org)}`);
+        const repo = repositories.repos[0];
+        if (!repo || !active) return;
+        setForm((current) => ({ ...current, targetKind: "remote", org, repo, backend: "daytona" }));
+      } catch {
+        // No configured GitHub access: retain the usable local fallback.
+      } finally {
+        if (active) setCodeDefaultsReady(true);
+      }
+    };
+    void bootstrapGithub();
+    return () => {
+      active = false;
+    };
+  }, [codeDefaultsReady]);
+
+  // Seed "Base branch" with the selected repo's real default (not a hardcoded
+  // "main"). Only replaces a branch the operator hasn't chosen: still empty, still
+  // the placeholder "main", or still our own last auto-fill.
+  useEffect(() => {
+    if (form.targetKind !== "remote" || !form.repo) return;
+    let active = true;
+    const repoAtFetch = form.repo;
+    api<{ repo: string; defaultBranch: string }>(`/api/github/default-branch?repo=${encodeURIComponent(form.repo)}`)
+      .then((payload) => {
+        if (!active || !payload.defaultBranch) return;
+        setForm((current) => {
+          if (current.repo !== repoAtFetch) return current;
+          const untouched = !current.branch || current.branch === "main" || current.branch === autoBranchRef.current;
+          if (!untouched) return current;
+          autoBranchRef.current = payload.defaultBranch;
+          return { ...current, branch: payload.defaultBranch };
+        });
+      })
+      .catch(() => {
+        // Repo default unavailable (no access / not installed): keep the current
+        // value; the operator can still type the base branch by hand.
+      });
+    return () => { active = false; };
+  }, [form.repo, form.targetKind]);
+
+  useEffect(() => {
+    if (codeDefaultsReady && !initial) saveCodeSettings(form);
+  }, [
+    codeDefaultsReady,
+    form.targetKind,
+    form.repoPath,
+    form.org,
+    form.repo,
+    form.issue,
+    form.branch,
+    form.newBranch,
+    form.branchName,
+    form.publish,
+    initial,
+  ]);
+
+  useEffect(() => {
+    let alive = true;
+    api<{ instructions: Instruction[] }>("/api/instructions")
+      .then((r) => {
+        if (!alive) return;
+        setInstructions(r.instructions);
+        // Hydrate the editor if a preset (or last run) had one selected.
+        setSelectedInstructionId((current) => {
+          const found = current ? r.instructions.find((i) => i.id === current) : undefined;
+          if (found) {
+            setInstructionBody(found.body);
+            setInstructionName(found.name);
+          }
+          return found ? current : null;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const selectInstruction = (id: string | null) => {
+    if (!id) {
+      setSelectedInstructionId(null);
+      setInstructionBody("");
+      setInstructionName("");
+      return;
+    }
+    const found = instructions.find((i) => i.id === id);
+    if (!found) return;
+    setSelectedInstructionId(id);
+    setInstructionBody(found.body);
+    setInstructionName(found.name);
+  };
+
+  const openInstructionModal = (presetId: string, instructionId: string | null) => {
+    setInstructionModalOriginalId(selectedInstructionId);
+    selectInstruction(instructionId);
+    setGenDescription("");
+    setInstructionModalPresetId(presetId);
+  };
+
+  const closeInstructionModal = () => {
+    setInstructionModalPresetId(null);
+    selectInstruction(instructionModalOriginalId);
+  };
+
+  const generateInstruction = async () => {
+    if (!genDescription.trim()) return;
+    setGenerating(true);
+    setError(null);
+    try {
+      const { body } = await api<{ body: string }>("/api/instructions/generate", {
+        method: "POST",
+        body: JSON.stringify({ description: genDescription }),
+      });
+      setInstructionBody(body);
+      setSelectedInstructionId(null); // generated text diverges from any saved one
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // Persist the editor. With an id → update that instruction; without → create.
+  const persistInstruction = async (id?: string) => {
+    const name = instructionName.trim();
+    if (!name || !instructionBody.trim()) return;
+    try {
+      const saved = await api<Instruction>("/api/instructions", {
+        method: "POST",
+        body: JSON.stringify({ ...(id ? { id } : {}), name, body: instructionBody }),
+      });
+      setInstructions((current) => [saved, ...current.filter((i) => i.id !== saved.id)]);
+      setSelectedInstructionId(saved.id);
+      setInstructionName(saved.name);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const deleteInstruction = async () => {
+    if (!selectedInstructionId) return;
+    try {
+      const { instructions: remaining } = await api<{ instructions: Instruction[] }>(
+        `/api/instructions/${encodeURIComponent(selectedInstructionId)}`,
+        { method: "DELETE" },
+      );
+      setInstructions(remaining);
+      selectInstruction(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const selectedInstruction = selectedInstructionId ? instructions.find((i) => i.id === selectedInstructionId) : undefined;
+  const instructionDirty =
+    !!selectedInstruction && (selectedInstruction.body !== instructionBody || selectedInstruction.name !== instructionName.trim());
+
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browseOpen, setBrowseOpen] = useState(false);
   const [nativeBrowsing, setNativeBrowsing] = useState(false);
   const [branchOpen, setBranchOpen] = useState(false);
+  const [codeSettingsOpen, setCodeSettingsOpen] = useState(false);
 
   const providerModels = options.providers.find((p) => p.id === form.provider)?.models ?? [form.model];
   const isRemote = form.targetKind === "remote";
-  const branchTarget = form.newBranch ? form.branchName : form.branch;
-  // Remote (GitHub) checkouts are only materialized by the daytona backend.
-  const backendOptions = isRemote ? options.backends.filter((b) => b === "daytona") : options.backends;
+  const branchTarget = form.newBranch ? "automatic branch" : form.branch;
+  const codeLocation = isRemote
+    ? (form.repo || "Choose a GitHub repository")
+    : (form.repoPath.split("/").filter(Boolean).at(-1) || "Choose a local folder");
+  const codeBranchSummary = form.newBranch
+    ? `${form.branch || "main"} → automatic new branch`
+    : form.branch || "Choose a branch";
+  const runAction = runActionCopy(form);
+  const backendOptions = isRemote ? options.backends.filter((backend) => backend !== "container") : options.backends;
 
   const patch = (next: Partial<LaunchForm>) => setForm((current) => ({ ...current, ...next }));
 
-  const chooseTargetKind = (kind: "local" | "remote") =>
-    patch(kind === "remote" ? { targetKind: "remote", backend: "daytona" } : { targetKind: "local" });
+  const applyPreset = (preset: RobotPreset) => {
+    patch({ provider: preset.provider, model: preset.model, backend: preset.backend, agent: preset.agent });
+    setSkills([...preset.skills]);
+    selectInstruction(preset.instructionId ?? null);
+    setActivePresetId(preset.id);
+    saveActiveRobotPresetId(preset.id);
+  };
+
+  // Manual edits from the settings popover diverge from whichever preset was active, so drop the highlight.
+  const patchAgentSettings = (next: Partial<LaunchForm>) => {
+    setActivePresetId(null);
+    saveActiveRobotPresetId(null);
+    patch(next);
+  };
+
+  const setSkillsManually: typeof setSkills = (updater) => {
+    setActivePresetId(null);
+    saveActiveRobotPresetId(null);
+    setSkills(updater);
+  };
+
+  const saveCurrentAsPreset = (name: string) => {
+    const preset: RobotPreset = {
+      id: (crypto.randomUUID?.() ?? `preset-${Date.now()}`),
+      name,
+      provider: form.provider,
+      model: form.model,
+      backend: form.backend,
+      agent: form.agent,
+      skills: [...skills],
+      ...(selectedInstructionId ? { instructionId: selectedInstructionId } : {}),
+    };
+    setPresets((current) => {
+      const next = [...current, preset];
+      saveRobotPresets(next);
+      return next;
+    });
+    setActivePresetId(preset.id);
+    saveActiveRobotPresetId(preset.id);
+  };
+
+  const removePreset = (id: string) => {
+    setPresets((current) => {
+      const next = current.filter((preset) => preset.id !== id);
+      saveRobotPresets(next);
+      return next;
+    });
+    if (activePresetId === id) {
+      setActivePresetId(null);
+      saveActiveRobotPresetId(null);
+    }
+  };
+
+  const updatePreset = (updated: RobotPreset) => {
+    setPresets((current) => {
+      const next = current.map((preset) => (preset.id === updated.id ? updated : preset));
+      saveRobotPresets(next);
+      return next;
+    });
+    if (activePresetId === updated.id) {
+      patch({ provider: updated.provider, model: updated.model, backend: updated.backend, agent: updated.agent });
+      setSkills([...updated.skills]);
+      selectInstruction(updated.instructionId ?? null);
+    }
+  };
+
+  const assignInstructionToPreset = (instructionId: string | null) => {
+    if (!instructionModalPresetId) return;
+    if (instructionModalPresetId === CURRENT_ROBOT_PROMPT) {
+      selectInstruction(instructionId);
+      setInstructionModalPresetId(null);
+      return;
+    }
+    const preset = presets.find((item) => item.id === instructionModalPresetId);
+    if (!preset) return;
+    const { instructionId: _drop, ...rest } = preset;
+    updatePreset(instructionId ? { ...rest, instructionId } : rest);
+    setInstructionModalPresetId(null);
+  };
+
+  const chooseTargetKind = (kind: "local" | "remote") => patch({ targetKind: kind });
 
   const submit = async () => {
     setLaunching(true);
     setError(null);
     try {
-      await onLaunch(form);
+      await onLaunch(form, instructionBody.trim() || undefined);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -953,17 +1692,197 @@ function NewRunView({
 
   return (
     <section className="launch-view">
-      <header className="launch-head">
-        <div>
-          <div className="eyebrow">NEW CONVERSATION</div>
-          <h1>Start an agent run</h1>
-          <p>Choose the target and execution context, then describe the outcome.</p>
+      <header className="launch-head robot-head">
+        <div className="robot-bar" role="group" aria-label="Agent presets">
+          {presets.map((preset) => (
+            <RobotTile
+              key={preset.id}
+              preset={preset}
+              active={preset.id === activePresetId}
+              options={options}
+              instructions={instructions}
+              onApply={() => applyPreset(preset)}
+              onUpdate={updatePreset}
+              onRemove={() => removePreset(preset.id)}
+              onManageInstruction={openInstructionModal}
+            />
+          ))}
+          <AgentSettingsTile
+            form={form}
+            patch={patchAgentSettings}
+            skills={skills}
+            setSkills={setSkillsManually}
+            options={options}
+            providerModels={providerModels}
+            backendOptions={backendOptions}
+            isMatchedPreset={activePresetId !== null}
+            hasPresets={presets.length > 0}
+            onSavePreset={saveCurrentAsPreset}
+            instructions={instructions}
+            instructionId={selectedInstructionId}
+            onManageInstruction={() => openInstructionModal(CURRENT_ROBOT_PROMPT, selectedInstructionId)}
+          />
         </div>
         <span className="draft-state">Browser draft</span>
       </header>
 
+      {instructionModalPresetId && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeInstructionModal}>
+          <section
+            className="instruction-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="instruction-modal-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="instruction-modal-head">
+              <div>
+                <span className="modal-kicker">Robot prompt</span>
+                <h2 id="instruction-modal-title">System prompt</h2>
+                <p>Choose a saved prompt, write one directly, or generate a starting point.</p>
+              </div>
+              <button type="button" className="icon-button" aria-label="Close prompt editor" onClick={closeInstructionModal}><X size={16} /></button>
+            </header>
+
+            <InstructionSelect label="Saved prompt" value={selectedInstructionId} instructions={instructions} onChange={selectInstruction} />
+
+            <label className="instruction-modal-field">
+              <span>Prompt</span>
+              <textarea
+                value={instructionBody}
+                onChange={(event) => setInstructionBody(event.target.value)}
+                placeholder="Describe how this robot should behave…"
+                autoFocus
+              />
+            </label>
+
+            <div className="instruction-generate">
+              <input
+                value={genDescription}
+                onChange={(event) => setGenDescription(event.target.value)}
+                placeholder="Describe the prompt you want generated…"
+                aria-label="Describe the instruction to generate"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void generateInstruction();
+                  }
+                }}
+              />
+              <button type="button" className="instruction-gen-button" disabled={generating || !genDescription.trim()} onClick={() => void generateInstruction()}>
+                <Sparkles size={14} /> {generating ? "Generating…" : "Generate"}
+              </button>
+            </div>
+
+            <div className="instruction-save-row">
+              <input
+                value={instructionName}
+                onChange={(event) => setInstructionName(event.target.value)}
+                placeholder="Prompt name"
+                aria-label="Prompt name"
+              />
+              {instructionDirty && (
+                <button type="button" className="secondary-button" disabled={!instructionName.trim() || !instructionBody.trim()} onClick={() => void persistInstruction(selectedInstructionId ?? undefined)}>
+                  <Check size={13} /> Save
+                </button>
+              )}
+              <button type="button" className="secondary-button" disabled={!instructionName.trim() || !instructionBody.trim()} onClick={() => void persistInstruction()}>
+                <Plus size={13} /> Save new
+              </button>
+              {selectedInstructionId && (
+                <button type="button" className="icon-button instruction-delete" aria-label="Delete saved prompt" onClick={() => void deleteInstruction()}>
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+
+            <footer className="instruction-modal-foot">
+              <button type="button" className="secondary-button" onClick={() => assignInstructionToPreset(null)}>No prompt</button>
+              <span />
+              <button type="button" className="secondary-button" onClick={closeInstructionModal}>Cancel</button>
+              <button type="button" className="org-save" disabled={!selectedInstructionId} onClick={() => assignInstructionToPreset(selectedInstructionId)}>
+                Use prompt
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {codeSettingsOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCodeSettingsOpen(false); }}>
+          <section className="code-settings-modal" role="dialog" aria-modal="true" aria-labelledby="code-settings-title">
+            <header className="instruction-modal-head">
+              <div>
+                <span className="modal-kicker">Run destination</span>
+                <h2 id="code-settings-title">Code &amp; delivery</h2>
+                <p>Choose the checkout, base branch, and how the finished work should be delivered.</p>
+              </div>
+              <button type="button" className="icon-button" aria-label="Close code settings" onClick={() => setCodeSettingsOpen(false)}><X size={16} /></button>
+            </header>
+
+            <section className="code-modal-section">
+              <div className="config-block-head"><h3>Code</h3><p>Where the work should land.</p></div>
+              <div className="target-kind-switch" role="tablist" aria-label="Target kind">
+                <button role="tab" aria-selected={!isRemote} className={!isRemote ? "active" : ""} onClick={() => chooseTargetKind("local")}><FolderGit2 size={13} /> Local</button>
+                <button role="tab" aria-selected={isRemote} className={isRemote ? "active" : ""} onClick={() => chooseTargetKind("remote")}><Github size={13} /> GitHub</button>
+              </div>
+              {isRemote ? (
+                <>
+                  <GithubTargetPicker org={form.org} repo={form.repo} onChange={patch} />
+                  <div className="field-grid github-meta-fields">
+                    <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} placeholder="main" />
+                    <FieldInput label="Issue (optional)" value={form.issue} onChange={(issue) => patch({ issue })} icon={<Link2 size={14} />} placeholder="123" />
+                  </div>
+                </>
+              ) : (
+                <div className="field-grid target-fields">
+                  <div className="field-with-action">
+                    <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
+                    <div className="browse-split">
+                      <button className="browse-button" disabled={nativeBrowsing} onClick={() => void chooseNativeFolder()}><FolderGit2 size={13} /> {nativeBrowsing ? "Choosing…" : "Browse"}</button>
+                      <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
+                    </div>
+                  </div>
+                  <div className="field-with-action branch-field-with-action">
+                    <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
+                    <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            <section className="code-modal-section">
+              <div className="config-block-head"><h3>Delivery</h3><p>Branch &amp; PR for the work.</p></div>
+              <label className="branch-toggle">
+                <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
+                <span className="toggle-track"><i /></span>
+                <span><strong>Create a new branch</strong><small>{form.newBranch ? "name generated when the run starts" : `work on ${form.branch}`}</small></span>
+              </label>
+              <label className="branch-toggle publish-toggle">
+                <input type="checkbox" checked={form.publish} onChange={(event) => patch({ publish: event.target.checked })} />
+                <span className="toggle-track"><i /></span>
+                <span><strong>Open a draft PR when done</strong><small>{isRemote ? "pushes the branch from the sandbox, opens a draft PR" : "pushes the branch & opens a draft PR"}</small></span>
+              </label>
+            </section>
+
+            <footer className="code-settings-foot">
+              <span>{isRemote ? "GitHub" : "Local"} · {codeLocation} · {codeBranchSummary}</span>
+              <button type="button" className="org-save" onClick={() => setCodeSettingsOpen(false)}>Done</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
       <div className="launch-body">
         <div className="launch-main">
+          <button type="button" className="code-context-button" onClick={() => setCodeSettingsOpen(true)}>
+            <span className="code-context-icon">{isRemote ? <Github size={13} /> : <FolderGit2 size={13} />}</span>
+            <span className="code-context-copy">
+              <strong>{codeLocation}</strong>
+              <small>{codeBranchSummary}</small>
+            </span>
+            <span className="code-context-edit">Code settings <ChevronRight size={12} /></span>
+          </button>
           <section className="launch-section prompt-section">
             <div className="prompt-editor">
               <textarea
@@ -989,81 +1908,12 @@ function NewRunView({
               <span><Cloud size={13} /> {backendLabel(form.backend)}</span>
             </div>
             <button className="launch-button" disabled={!form.prompt.trim() || (isRemote ? !form.repo.trim() : !form.repoPath.trim()) || launching} onClick={submit}>
-              {launching ? "Launching…" : "Launch run"} <span>⌘↵</span><ArrowUpRight size={14} />
+              {launching ? runAction.busy : runAction.idle} <span>⌘↵</span><ArrowUpRight size={14} />
             </button>
           </div>
         </div>
 
         <aside className="config-panel">
-          <section className="config-block">
-            <div className="config-block-head"><h3>Delivery</h3><p>Branch &amp; PR for the work.</p></div>
-            <label className="branch-toggle">
-              <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
-              <span className="toggle-track"><i /></span>
-              <span><strong>Create a new branch</strong><small>{form.newBranch ? form.branchName : `work on ${form.branch}`}</small></span>
-            </label>
-            {form.newBranch && (
-              <div className="field-grid single-field">
-                <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
-              </div>
-            )}
-            <label className="branch-toggle publish-toggle">
-              <input type="checkbox" checked={form.publish} onChange={(event) => patch({ publish: event.target.checked })} />
-              <span className="toggle-track"><i /></span>
-              <span><strong>Open a draft PR when done</strong><small>{isRemote ? "pushes the branch from the sandbox, opens a draft PR" : "pushes the branch & opens a draft PR"}</small></span>
-            </label>
-          </section>
-
-          <section className="config-block">
-            <div className="config-block-head"><h3>Code</h3><p>Where the work should land.</p></div>
-            <div className="target-kind-switch" role="tablist" aria-label="Target kind">
-              <button role="tab" aria-selected={!isRemote} className={!isRemote ? "active" : ""} onClick={() => chooseTargetKind("local")}><FolderGit2 size={13} /> Local</button>
-              <button role="tab" aria-selected={isRemote} className={isRemote ? "active" : ""} onClick={() => chooseTargetKind("remote")}><Github size={13} /> GitHub</button>
-            </div>
-            {isRemote ? (
-              <>
-                <GithubTargetPicker org={form.org} repo={form.repo} onChange={patch} />
-                <div className="field-grid github-meta-fields">
-                  <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} placeholder="main" />
-                  <FieldInput label="Issue (optional)" value={form.issue} onChange={(issue) => patch({ issue })} icon={<Link2 size={14} />} placeholder="123" />
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="field-grid target-fields">
-                  <div className="field-with-action">
-                    <FieldInput label="Local checkout" value={form.repoPath} onChange={(repoPath) => patch({ repoPath })} icon={<Github size={14} />} placeholder="/Users/caleb/code/project" />
-                    <div className="browse-split">
-                      <button className="browse-button" disabled={nativeBrowsing} onClick={() => void chooseNativeFolder()}><FolderGit2 size={13} /> {nativeBrowsing ? "Choosing…" : "Browse"}</button>
-                      <button className="browse-menu-button" aria-label="Recent local checkouts" onClick={() => setBrowseOpen(true)}><ChevronDown size={14} /></button>
-                    </div>
-                  </div>
-                  <div className="field-with-action branch-field-with-action">
-                    <FieldInput label="Base branch" value={form.branch} onChange={(branch) => patch({ branch })} icon={<GitBranch size={14} />} />
-                    <button className="browse-menu-button branch-picker-button" aria-label="Recent and detected branches" onClick={() => setBranchOpen(true)}><ChevronDown size={14} /></button>
-                  </div>
-                </div>
-              </>
-            )}
-          </section>
-
-          <section className="config-block">
-            <div className="config-block-head"><h3>Agent</h3><p>How and where the agent runs.</p></div>
-            <div className="field-grid runtime-fields">
-              <FieldSelect label="Provider" value={form.provider} options={options.providers.map((p) => p.id)} onChange={(provider) => patch({ provider, model: options.providers.find((p) => p.id === provider)?.models[0] ?? form.model })} icon={<Bot size={14} />} />
-              <FieldSelect label="Model" value={form.model} options={providerModels} onChange={(model) => patch({ model })} icon={<Bot size={14} />} />
-              <FieldSelect label="Backend" value={form.backend} options={backendOptions} onChange={(backend) => patch({ backend })} icon={<Cloud size={14} />} />
-              <FieldInput label="Agent" value={form.agent} onChange={(agent) => patch({ agent })} icon={<Bot size={14} />} />
-            </div>
-            <div className="skill-row">
-              <span className="field-label">Skills</span>
-              {skills.map((skill) => (
-                <span className="skill-chip" key={skill}><Link2 size={11} />{skill}<button aria-label={`Remove ${skill}`} onClick={() => setSkills((current) => current.filter((item) => item !== skill))}><X size={10} /></button></span>
-              ))}
-              <button className="add-skill" onClick={() => setSkills((current) => current.includes("browser") ? current : [...current, "browser"])}><Plus size={11} /> Add skill</button>
-            </div>
-          </section>
-
           <section className="config-block">
             <div className="config-block-head"><h3>QA review</h3><p>Screenshot the feature after the run.</p></div>
             <label className="branch-toggle publish-toggle">
@@ -1121,7 +1971,7 @@ function sessionMarkdown(session: AgentSession, index: number, entries: Timeline
     `- Backend: ${backendLabel(session.settings.backend)}`,
     `- Agent: ${session.settings.agent}`,
     `- Target: ${targetLabel(target)} (${target.kind})`,
-    `- Branch: ${targetBranch(target)}${target.kind === "remote" && target.newBranch ? ` → ${target.newBranch}` : ""}`,
+    `- Branch: ${target.branch}${target.newBranch ? ` → ${target.newBranch}` : ""}`,
     `- Status: ${session.status}`,
     `- Session ID: \`${session.id}\``,
   ];
@@ -1464,7 +2314,7 @@ function ConversationView({
               <SessionCard session={session} index={index} entries={entriesBySession.get(session.id) ?? []} />
               <TimelineForSession entries={entriesBySession.get(session.id) ?? []} prompt={session.prompt?.task || session.prompt?.assembled || ""} label={providerLabel(session.settings.provider)} />
               {session.artifacts?.length ? <SessionArtifacts conversationId={rendered.conversation.id} sessionId={session.id} artifacts={session.artifacts} /> : null}
-              {(() => { const pub = publishEventFor(rendered.events, session.id); return pub ? <PublishCard event={pub} /> : null; })()}
+              {(() => { const pub = publishEventFor(rendered.events, session.id); return pub ? <PublishCard event={pub} target={rendered.conversation.target} /> : null; })()}
             </div>
           )) : (
             <div className="empty-state">
@@ -1598,21 +2448,24 @@ function App() {
     window.history.pushState(null, "", "/new");
   };
 
-  const launch = async (form: LaunchForm) => {
-    const newBranchName = form.newBranch ? form.branchName.trim() : "";
+  const launch = async (form: LaunchForm, persona?: string) => {
     const issue = form.issue.trim();
     const target: Target = form.targetKind === "remote"
       ? {
           kind: "remote",
           repo: form.repo.trim(),
           branch: form.branch,
-          ...(newBranchName ? { newBranch: newBranchName } : {}),
           ...(/^\d+$/.test(issue) ? { issue: Number(issue) } : {}),
         }
-      : { kind: "local", repoPath: form.repoPath, branch: newBranchName || form.branch };
+      : { kind: "local", repoPath: form.repoPath, branch: form.branch };
     const conv = await api<Conversation>("/api/conversations", {
       method: "POST",
-      body: JSON.stringify({ title: form.title || form.prompt.split("\n")[0] || "Agent run", target }),
+      body: JSON.stringify({
+        title: form.title || form.prompt.split("\n")[0] || "Agent run",
+        target,
+        createNewBranch: form.newBranch,
+        branchPrompt: form.prompt,
+      }),
     });
     await api<{ sessionId: string }>(`/api/conversations/${encodeURIComponent(conv.id)}/sessions`, {
       method: "POST",
@@ -1624,6 +2477,7 @@ function App() {
           agent: form.agent,
         },
         task: form.prompt,
+        ...(persona ? { persona } : {}),
         publish: form.publish,
         qaReview: form.qaReview,
       }),

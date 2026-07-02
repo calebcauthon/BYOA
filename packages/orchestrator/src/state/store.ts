@@ -18,13 +18,14 @@
  */
 import { mkdirSync, writeFileSync, readFileSync, renameSync, readdirSync, existsSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Conversation, Event } from "@automations/core";
+import type { Conversation, Event, Instruction } from "@automations/core";
 
 export const STATE_DIR = process.env.AUTOMATIONS_STATE_DIR ?? join(process.cwd(), ".automations-state");
 const CONV_DIR = join(STATE_DIR, "conversations");
 const LOCAL_RECENTS_FILE = join(STATE_DIR, "local-recents.json");
 const BRANCH_RECENTS_FILE = join(STATE_DIR, "branch-recents.json");
 const GITHUB_FILE = join(STATE_DIR, "github.json");
+const INSTRUCTIONS_FILE = join(STATE_DIR, "instructions.json");
 
 export function conversationDir(id: string): string {
   return join(CONV_DIR, id);
@@ -61,12 +62,19 @@ export function getConversation(id: string): Conversation | null {
   return readJSON<Conversation>(join(conversationDir(id), "conversation.json"));
 }
 
-export function listConversations(): Conversation[] {
+export function getOwnedConversation(id: string, ownerUserId: string): Conversation | null {
+  const conversation = getConversation(id);
+  if (!conversation) return null;
+  const owner = conversation.ownerUserId ?? "local";
+  return owner === ownerUserId ? conversation : null;
+}
+
+export function listConversations(ownerUserId: string): Conversation[] {
   if (!existsSync(CONV_DIR)) return [];
   const out: Conversation[] = [];
   for (const id of readdirSync(CONV_DIR)) {
     const conv = getConversation(id);
-    if (conv) out.push(conv);
+    if (conv && (conv.ownerUserId ?? "local") === ownerUserId) out.push(conv);
   }
   out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
   return out;
@@ -225,4 +233,51 @@ export function writeReposCache(org: string, repos: string[]): void {
   const state = readGithubState();
   state.repos[normalized] = { fetchedAt: new Date().toISOString(), repos };
   writeGithubState(state);
+}
+
+// ───────────────────────────── instructions ─────────────────────────────
+//
+// A named, reusable system prompt library (see core `Instruction`). Host-owned,
+// stored as one JSON array — same shape/atomicity as the recents files above so
+// a crash never truncates it. The console attaches a chosen instruction to a run
+// as the prompt persona.
+
+function instructionId(): string {
+  return `inst-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function listInstructions(): Instruction[] {
+  const raw = readJSON<Instruction[]>(INSTRUCTIONS_FILE);
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is Instruction =>
+        typeof item?.id === "string" &&
+        typeof item?.name === "string" &&
+        typeof item?.body === "string" &&
+        typeof item?.createdAt === "string" &&
+        typeof item?.updatedAt === "string",
+    )
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
+/** Create (no id) or update (existing id) an instruction; stamps timestamps. */
+export function saveInstruction(input: { id?: string; name: string; body: string }): Instruction {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const now = new Date().toISOString();
+  const all = listInstructions();
+  const existing = input.id ? all.find((i) => i.id === input.id) : undefined;
+  const saved: Instruction = existing
+    ? { ...existing, name: input.name, body: input.body, updatedAt: now }
+    : { id: instructionId(), name: input.name, body: input.body, createdAt: now, updatedAt: now };
+  const next = existing ? all.map((i) => (i.id === saved.id ? saved : i)) : [saved, ...all];
+  atomicWrite(INSTRUCTIONS_FILE, JSON.stringify(next, null, 2));
+  return saved;
+}
+
+export function deleteInstruction(id: string): Instruction[] {
+  const next = listInstructions().filter((i) => i.id !== id);
+  mkdirSync(STATE_DIR, { recursive: true });
+  atomicWrite(INSTRUCTIONS_FILE, JSON.stringify(next, null, 2));
+  return next;
 }

@@ -5,7 +5,7 @@
  * a place to execute commands and a working tree. The orchestrator picks which
  * backend a session uses; the runner just resolves and drives it.
  */
-import type { AgentSessionSettings, LogSource } from "@automations/core";
+import type { AgentSessionSettings, Credentials, LogSource } from "@automations/core";
 import type { SessionLog } from "../logging.ts";
 
 export interface ExecResult {
@@ -72,8 +72,13 @@ export interface PreparedBackend {
 
 export interface Backend {
   readonly kind: string;
-  /** stand up the execution environment + working tree + scratch dir */
-  prepare(settings: AgentSessionSettings, log: SessionLog): Promise<PreparedBackend>;
+  /**
+   * Stand up the execution environment + working tree + scratch dir. `credentials`
+   * carries per-principal secrets a backend may need to fetch the tree (e.g. the
+   * GitHub token daytona uses to clone a private repo). Backends that don't need
+   * secrets (local/container bind-mount) may ignore it.
+   */
+  prepare(settings: AgentSessionSettings, log: SessionLog, credentials?: Credentials): Promise<PreparedBackend>;
   /**
    * The backend's current wall-clock as epoch milliseconds. The orchestrator
    * samples this once up front to compute the offset between the backend's clock

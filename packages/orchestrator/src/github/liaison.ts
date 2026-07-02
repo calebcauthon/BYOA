@@ -24,9 +24,9 @@ interface HostRun {
 }
 
 /** Run a host command (git/gh) capturing output. */
-function host(bin: string, args: string[], input?: string): Promise<HostRun> {
+function host(bin: string, args: string[], input?: string, env?: Record<string, string>): Promise<HostRun> {
   return new Promise((resolve) => {
-    const child = spawn(bin, args);
+    const child = spawn(bin, args, { env: { ...process.env, ...env } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
@@ -43,13 +43,19 @@ export interface PublishContext {
   /** working tree path INSIDE the backend (host path for local; /workspace for daytona) */
   workdir: string;
   branch: string;
+  /** Expected owner/name for remote targets; guards against pushing a stale or incorrect checkout. */
+  repo?: string;
   /** PR base branch; defaults to the repo's default branch when omitted. */
   base?: string;
+  /** the principal's GitHub token for the push; falls back to `gh auth token`
+   *  (host CLI) when omitted, preserving single-operator local behavior. */
+  token?: string;
   result: AgentResult;
 }
 
 export interface PublishOutcome {
   pushed: boolean;
+  branchUrl?: string;
   prUrl?: string;
   commentsPosted: number;
   skipped?: string;
@@ -71,23 +77,84 @@ export async function publish(ctx: PublishContext, log: SessionLog): Promise<Pub
   const { backend, workdir, branch, result } = ctx;
   const list = result.publish ?? [];
 
-  if (!result.changed) {
-    log.emit("orchestrator", "info", "publish skipped: agent made no changes");
-    return { pushed: false, commentsPosted: 0, skipped: "no-change" };
-  }
   const slug = await slugFrom(ctx, log);
   if (!slug) {
     log.emit("orchestrator", "info", "publish skipped: checkout has no github origin");
     return { pushed: false, commentsPosted: 0, skipped: "no-origin" };
   }
+  if (ctx.repo && slug.toLowerCase() !== ctx.repo.toLowerCase()) {
+    log.emit("orchestrator", "error", `publish blocked: checkout origin is ${slug}, but run target is ${ctx.repo}`);
+    return { pushed: false, commentsPosted: 0, skipped: "origin-mismatch" };
+  }
+  const branchUrl = `https://github.com/${slug}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`;
+
+  // One-shot token — prefer the principal's token (GitHub App, hosted); fall back
+  // to the host `gh` CLI (local). Redacted from logs; never persisted in
+  // .git/config. Acquired up front so the default-branch lookup below is
+  // authenticated (private repos) and reused for push + PR work.
+  const token = ctx.token || (await host("gh", ["auth", "token"])).stdout.trim();
+  if (!token) {
+    log.emit("orchestrator", "error", "publish: no github token (principal token or `gh auth token`)");
+    return { pushed: false, commentsPosted: 0, skipped: "no-token" };
+  }
+  const ghEnv = { GH_TOKEN: token };
+  const base = ctx.base || (await host("gh", ["repo", "view", slug, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"], undefined, ghEnv)).stdout || "master";
+
+  // Agents are instructed to commit, but publishing must not depend on prompt
+  // compliance. Capture any remaining working-tree changes before the ephemeral
+  // backend is disposed, then use git history—not the provider's `changed`
+  // flag—as the source of truth for whether a PR can exist.
+  const status = await backend.exec(
+    ["git", "status", "--porcelain"],
+    { cwd: workdir, source: "orchestrator", logStdout: false },
+    log,
+  );
+  if (status.exitCode !== 0) {
+    log.emit("orchestrator", "error", "publish: could not inspect working tree");
+    return { pushed: false, commentsPosted: 0, skipped: "status-failed" };
+  }
+  if (status.stdout.trim()) {
+    log.emit("orchestrator", "info", "publish: committing remaining agent changes");
+    const add = await backend.exec(["git", "add", "-A"], { cwd: workdir, source: "orchestrator" }, log);
+    if (add.exitCode !== 0) return { pushed: false, commentsPosted: 0, skipped: "commit-failed" };
+    const commit = await backend.exec(
+      [
+        "git",
+        "-c",
+        "user.name=automations agent",
+        "-c",
+        "user.email=agent@automations.local",
+        "commit",
+        "-m",
+        `agent: ${branch}`,
+      ],
+      { cwd: workdir, source: "orchestrator" },
+      log,
+    );
+    if (commit.exitCode !== 0) {
+      log.emit("orchestrator", "error", `publish: commit failed: ${(commit.stderr || commit.stdout).slice(-400)}`);
+      return { pushed: false, commentsPosted: 0, skipped: "commit-failed" };
+    }
+  }
+
+  const comparisonBase = base === branch ? `origin/${base}` : base;
+  const ahead = await backend.exec(
+    ["git", "rev-list", "--count", `${comparisonBase}..HEAD`],
+    { cwd: workdir, source: "orchestrator", logStdout: false },
+    log,
+  );
+  const commitsAhead = Number.parseInt(ahead.stdout.trim(), 10);
+  if (ahead.exitCode !== 0 || !Number.isFinite(commitsAhead)) {
+    log.emit("orchestrator", "error", `publish: could not compare HEAD with base ${base}`);
+    return { pushed: false, commentsPosted: 0, skipped: "compare-failed" };
+  }
+  if (commitsAhead === 0) {
+    log.emit("orchestrator", "info", `publish skipped: no commits between ${comparisonBase} and ${branch}`);
+    return { pushed: false, commentsPosted: 0, skipped: "no-change" };
+  }
 
   // 1) push — through the backend, from wherever the commits are. One-shot token
   // URL (no token persisted in .git/config); token redacted from logs.
-  const token = (await host("gh", ["auth", "token"])).stdout.trim();
-  if (!token) {
-    log.emit("orchestrator", "error", "publish: no gh token (gh auth token)");
-    return { pushed: false, commentsPosted: 0, skipped: "no-token" };
-  }
   const authedUrl = `https://x-access-token:${token}@github.com/${slug}.git`;
   log.emit("orchestrator", "info", `pushing ${branch} → ${slug}`);
   const push = await backend.exec(
@@ -101,30 +168,30 @@ export async function publish(ctx: PublishContext, log: SessionLog): Promise<Pub
   }
 
   // 2) ensure a draft PR; description from the agent's pr-description
-  const base = ctx.base || (await host("gh", ["repo", "view", slug, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])).stdout || "master";
   if (base === branch) {
     log.emit("orchestrator", "info", `publish: pushed ${branch}; no PR (head equals base ${base} — enable "create a new branch" to open one)`);
-    return { pushed: true, commentsPosted: 0, skipped: "head-equals-base" };
+    return { pushed: true, branchUrl, commentsPosted: 0, skipped: "head-equals-base" };
   }
   const desc = pubs(list, "pr-description")[0];
   const title = desc?.title || `agent: ${branch}`;
   const body = desc?.body || "_(no description provided by the agent)_";
 
   let prUrl: string | undefined;
-  const existing = await host("gh", ["pr", "view", branch, "--repo", slug, "--json", "url", "-q", ".url"]);
+  const existing = await host("gh", ["pr", "view", branch, "--repo", slug, "--json", "url", "-q", ".url"], undefined, ghEnv);
   if (existing.code === 0 && existing.stdout) {
     prUrl = existing.stdout;
     log.emit("orchestrator", "info", `PR exists (${prUrl}); updating description`);
-    await host("gh", ["pr", "edit", branch, "--repo", slug, "--title", title, "--body-file", "-"], body);
+    await host("gh", ["pr", "edit", branch, "--repo", slug, "--title", title, "--body-file", "-"], body, ghEnv);
   } else {
     const create = await host(
       "gh",
       ["pr", "create", "--repo", slug, "--base", base, "--head", branch, "--draft", "--title", title, "--body-file", "-"],
       body,
+      ghEnv,
     );
     if (create.code !== 0) {
       log.emit("orchestrator", "error", `gh pr create failed: ${create.stderr.slice(-400)}`);
-      return { pushed: true, commentsPosted: 0, skipped: "pr-failed" };
+      return { pushed: true, branchUrl, commentsPosted: 0, skipped: "pr-failed" };
     }
     prUrl = create.stdout.split("\n").pop();
     log.emit("orchestrator", "info", `opened draft PR ${prUrl}`);
@@ -133,11 +200,11 @@ export async function publish(ctx: PublishContext, log: SessionLog): Promise<Pub
   // 3) post the agent-authored comments
   let commentsPosted = 0;
   for (const c of pubs(list, "comment")) {
-    const r = await host("gh", ["pr", "comment", branch, "--repo", slug, "--body-file", "-"], c.body);
+    const r = await host("gh", ["pr", "comment", branch, "--repo", slug, "--body-file", "-"], c.body, ghEnv);
     if (r.code === 0) commentsPosted++;
     else log.emit("orchestrator", "warn", `comment failed: ${r.stderr.slice(-300)}`);
   }
   if (commentsPosted) log.emit("orchestrator", "info", `posted ${commentsPosted} comment(s) on the PR`);
 
-  return { pushed: true, ...(prUrl ? { prUrl } : {}), commentsPosted };
+  return { pushed: true, branchUrl, ...(prUrl ? { prUrl } : {}), commentsPosted };
 }
