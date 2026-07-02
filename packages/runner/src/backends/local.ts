@@ -7,10 +7,11 @@
  * sentinel here — but we DO add the wall-clock timeout + heartbeat (§2.7) so the
  * exec contract is identical to what the sandbox backend will need.
  */
-import { spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import type { AgentSessionSettings } from "@automations/core";
 import {
   redactStr,
@@ -23,9 +24,12 @@ import {
 } from "./index.ts";
 import type { SessionLog } from "../logging.ts";
 
+const execFileAsync = promisify(execFile);
+
 class LocalBackend implements Backend {
   readonly kind = "local";
   private readonly settings: AgentSessionSettings;
+  private ephemeralRoot: string | undefined;
 
   constructor(settings: AgentSessionSettings) {
     this.settings = settings;
@@ -38,7 +42,34 @@ class LocalBackend implements Backend {
     // install) report those steps here too.
     // NB: the orchestrator owns branch/worktree creation (§4.1). Standalone, we
     // operate on whatever checkout we're handed.
-    const workdir = settings.target.kind === "local" ? settings.target.repoPath : process.cwd();
+    let workdir: string;
+    if (settings.target.kind === "local") {
+      workdir = settings.target.repoPath;
+    } else {
+      this.ephemeralRoot = mkdtempSync(join(tmpdir(), "automations-checkout-"));
+      workdir = join(this.ephemeralRoot, "repo");
+      log.emit("backend", "info", `cloning https://github.com/${settings.target.repo}.git (branch ${settings.target.branch}) → ${workdir} with local backend`);
+      try {
+        await execFileAsync(
+          "gh",
+          ["repo", "clone", settings.target.repo, workdir, "--", "--branch", settings.target.branch, "--single-branch"],
+          { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 },
+        );
+        await execFileAsync("git", ["-C", workdir, "config", "user.email", "agent@automations.local"]);
+        await execFileAsync("git", ["-C", workdir, "config", "user.name", "automations agent"]);
+      } catch (err) {
+        rmSync(this.ephemeralRoot, { recursive: true, force: true });
+        this.ephemeralRoot = undefined;
+        throw new Error(`local backend could not clone ${settings.target.repo}: ${String(err)}`);
+      }
+    }
+    if (settings.target.newBranch) {
+      log.emit("backend", "info", `creating branch ${settings.target.newBranch} off ${settings.target.branch}`);
+      await execFileAsync("git", ["-C", workdir, "checkout", "-b", settings.target.newBranch, settings.target.branch], {
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+      });
+    }
     const scratchDir = mkdtempSync(join(tmpdir(), "agent-session-"));
     log.emit("backend", "info", `prepared local backend; workdir ${workdir}; scratch ${scratchDir}`, {
       workdir,
@@ -141,7 +172,13 @@ class LocalBackend implements Backend {
   }
 
   async dispose(log: SessionLog): Promise<void> {
-    log.emit("backend", "info", "local backend: nothing to dispose");
+    if (this.ephemeralRoot) {
+      rmSync(this.ephemeralRoot, { recursive: true, force: true });
+      log.emit("backend", "info", "local backend: deleted temporary GitHub checkout");
+      this.ephemeralRoot = undefined;
+    } else {
+      log.emit("backend", "info", "local backend: nothing to dispose");
+    }
   }
 }
 

@@ -81,6 +81,11 @@ class ContainerBackend implements Backend {
     await this.dexec(["git", "config", "--global", "--add", "safe.directory", WORKDIR], log);
     await this.dexec(["git", "config", "--global", "user.email", "agent@automations.local"], log);
     await this.dexec(["git", "config", "--global", "user.name", "automations agent"], log);
+    if (settings.target.newBranch) {
+      log.emit("backend", "info", `creating branch ${settings.target.newBranch} off ${settings.target.branch}`);
+      const checkout = await this.dexec(["git", "checkout", "-b", settings.target.newBranch, settings.target.branch], log);
+      if (checkout.code !== 0) throw new Error(`could not create branch ${settings.target.newBranch}: ${checkout.stderr.slice(-500)}`);
+    }
 
     const has = await capture("docker", ["exec", this.containerId, "sh", "-lc", "command -v pi || true"]);
     if (!has.stdout.trim()) {

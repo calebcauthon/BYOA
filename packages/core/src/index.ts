@@ -25,7 +25,7 @@ export type Target =
   // `branch` is the base to clone; `newBranch`, when set, is created from it after
   // clone so the agent works on a fresh branch (mirrors the local "new branch").
   | { kind: "remote"; repo: string; issue?: number; branch: string; newBranch?: string }
-  | { kind: "local"; repoPath: string; branch: string };
+  | { kind: "local"; repoPath: string; branch: string; newBranch?: string };
 
 // ───────────────────────────── Agent Session settings ─────────────────────────────
 // Everything an Agent Session owns. See architecture.md §3.1.
@@ -93,6 +93,20 @@ export interface Prompt {
   images?: string[];
   /** the fully-assembled text as sent, for reproducibility */
   assembled: string;
+}
+
+// ───────────────────────────── Instruction ─────────────────────────────
+// A named, reusable system prompt. Saved server-side and attached to a run as
+// the Prompt's `persona`, so operators can build a library of behaviors ("terse
+// refactorer", "thorough QA") independent of which robot/preset runs them.
+
+export interface Instruction {
+  id: string;
+  name: string;
+  /** the system-prompt text sent as the Prompt persona */
+  body: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ───────────────────────────── Agent Session ─────────────────────────────

@@ -214,11 +214,12 @@ class DaytonaBackend implements Backend {
         token ? "x-access-token" : undefined,
         token || undefined,
       );
-      // Optionally branch off the cloned base so the agent works on a fresh branch.
-      if (settings.target.newBranch) {
-        log.emit("backend", "info", `creating branch ${settings.target.newBranch} off ${settings.target.branch}`);
-        await this.must(`cd ${WORKDIR} && git checkout -b ${settings.target.newBranch}`, log);
-      }
+    }
+    // Optionally branch off the selected base, for uploaded local repositories
+    // as well as cloned GitHub targets.
+    if (settings.target.newBranch) {
+      log.emit("backend", "info", `creating branch ${settings.target.newBranch} off ${settings.target.branch}`);
+      await this.must(`cd ${WORKDIR} && git checkout -b ${settings.target.newBranch} ${settings.target.branch}`, log);
     }
 
     // git identity so the agent can commit (host owns the push); trust the tree.

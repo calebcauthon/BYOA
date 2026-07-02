@@ -3,6 +3,10 @@
  * orchestrator is IO glue, not a framework showcase.
  *
  *   GET  /api/options                                                         → backends/providers/skills
+ *   GET  /api/instructions                                                    → Instruction[]
+ *   POST /api/instructions                       { id?, name, body }          → Instruction
+ *   DELETE /api/instructions/:id                                              → Instruction[]
+ *   POST /api/instructions/generate              { description }              → { body }
  *   POST /api/conversations                      { title, target }            → Conversation
  *   GET  /api/conversations                                                   → Conversation[]
  *   GET  /api/conversations/:id                                              → RenderedConversation
@@ -25,10 +29,13 @@ import {
 } from "../conversation/service.ts";
 import { buildTimeline } from "../logs/timeline.ts";
 import {
+  deleteInstruction,
   getOwnedConversation,
   listBranchRecents,
   listGithubOrgs,
+  listInstructions,
   listLocalRecents,
+  saveInstruction,
   readReposCache,
   rememberBranchRecent,
   rememberGithubOrg,
@@ -203,6 +210,15 @@ async function fetchOrgRepos(org: string): Promise<string[]> {
   return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+async function fetchGithubOrgs(): Promise<string[]> {
+  const { stdout } = await execFileAsync(
+    "gh",
+    ["api", "user/orgs", "--paginate", "--jq", ".[].login"],
+    { timeout: 30_000, maxBuffer: 1024 * 1024 },
+  );
+  return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
 interface GhIssue {
   number: number;
   title: string;
@@ -229,6 +245,82 @@ async function fetchIssues(repo: string): Promise<GhIssue[]> {
     labels: Array.isArray(i.labels) ? i.labels.map((l) => String((l as { name?: unknown })?.name ?? "")).filter(Boolean) : [],
     updatedAt: String(i.updatedAt ?? ""),
   }));
+}
+
+// Turn a short natural-language description into a system prompt via OpenRouter
+// (Haiku — cheap + fast for prompt-writing). Reuses OPENROUTER_API_KEY, the same
+// key the pi provider consumes; no extra dependency (global fetch, Node 18+).
+async function generateInstruction(description: string): Promise<string> {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) throw new Error("OPENROUTER_API_KEY is not set");
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: "anthropic/claude-haiku-4.5",
+      max_tokens: 2_000,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You write concise, effective system prompts for AI coding agents. Given a short description of the desired behavior, output ONLY the system prompt text itself — no preamble, no explanation, no surrounding quotes or markdown fences.",
+        },
+        { role: "user", content: description },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text()).slice(0, 500)}`);
+  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const body = data.choices?.[0]?.message?.content?.trim();
+  if (!body) throw new Error("OpenRouter returned no content");
+  return body;
+}
+
+function branchFallback(task: string): string {
+  const words = task
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/[\s-]+/)
+    .filter(Boolean)
+    .slice(0, 4)
+    .join("-");
+  return words || "agent-change";
+}
+
+async function generateBranchName(task: string): Promise<string> {
+  let slug = "";
+  const key = process.env.OPENROUTER_API_KEY;
+  if (key) {
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        signal: AbortSignal.timeout(8_000),
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model: "anthropic/claude-haiku-4.5",
+          max_tokens: 40,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Create a concise git branch slug describing the requested work. Output only 2-5 lowercase ASCII words joined by hyphens. No prefix, punctuation, quotes, markdown, or explanation.",
+            },
+            { role: "user", content: task.slice(0, 2_000) },
+          ],
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+        const candidate = data.choices?.[0]?.message?.content?.trim() ?? "";
+        if (/^[a-z0-9]+(?:-[a-z0-9]+){1,4}$/.test(candidate) && candidate.length <= 48) slug = candidate;
+      }
+    } catch {
+      // Branch naming must never prevent a run; use the deterministic fallback.
+    }
+  }
+  if (!slug) slug = branchFallback(task);
+  const suffix = `${Date.now().toString(36).slice(-3)}${Math.random().toString(36).slice(2, 5)}`;
+  return `auto/${slug.slice(0, 48).replace(/-+$/g, "")}-${suffix}`;
 }
 
 function cleanBranch(raw: string): string | null {
@@ -437,6 +529,35 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     });
   }
 
+  // /api/instructions — the reusable system-prompt library (host-owned). GET
+  // lists; POST creates (no id) or updates (id) and returns the saved record;
+  // /generate turns a description into prompt text via an LLM.
+  if (parts[0] === "instructions" && parts.length === 1) {
+    if (method === "GET") return send(res, 200, { instructions: listInstructions() });
+    if (method === "POST") {
+      const body = await readBody(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const text = typeof body.body === "string" ? body.body : "";
+      if (!name) return send(res, 400, { error: "name is required" });
+      if (!text.trim()) return send(res, 400, { error: "body is required" });
+      const id = typeof body.id === "string" && body.id ? body.id : undefined;
+      return send(res, 200, saveInstruction({ ...(id ? { id } : {}), name, body: text }));
+    }
+  }
+  if (parts[0] === "instructions" && parts[1] === "generate" && parts.length === 2 && method === "POST") {
+    const body = await readBody(req);
+    const description = typeof body.description === "string" ? body.description.trim() : "";
+    if (!description) return send(res, 400, { error: "description is required" });
+    try {
+      return send(res, 200, { body: await generateInstruction(description) });
+    } catch (err) {
+      return send(res, 400, { error: String(err) });
+    }
+  }
+  if (parts[0] === "instructions" && parts[1] && parts.length === 2 && method === "DELETE") {
+    return send(res, 200, { instructions: deleteInstruction(parts[1]) });
+  }
+
   // /api/local/browse and /api/local/recents — local-only operator affordances
   // for choosing a checkout path from the browser. Recents are host-owned state.
   if (parts[0] === "local" && parts[1] === "browse" && method === "GET") {
@@ -496,7 +617,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // re-types an org. /api/github/repos — cached owner/name list for an org; reads
   // the host cache instantly, only shelling out to `gh` on a miss or ?refresh=1.
   if (parts[0] === "github" && parts[1] === "orgs" && parts.length === 2) {
-    if (method === "GET") return send(res, 200, listGithubOrgs());
+    if (method === "GET") {
+      const saved = listGithubOrgs();
+      if (saved.orgs.length > 0) return send(res, 200, saved);
+      try {
+        return send(res, 200, { orgs: await fetchGithubOrgs(), lastOrg: null });
+      } catch {
+        return send(res, 200, saved);
+      }
+    }
     if (method === "POST") {
       const body = await readBody(req);
       const org = typeof body.org === "string" ? body.org.trim() : "";
@@ -536,7 +665,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (method === "GET") return send(res, 200, list(principal.id));
     if (method === "POST") {
       const body = await readBody(req);
-      const target = body["target"] as Target;
+      const requestedTarget = body["target"] as Target;
+      const target = body["createNewBranch"] === true
+        ? { ...requestedTarget, newBranch: await generateBranchName(String(body["branchPrompt"] ?? body["title"] ?? "agent change")) }
+        : requestedTarget;
       if (identity.kind === "hosted" && target?.kind !== "remote") {
         return send(res, 400, { error: "hosted conversations require a remote GitHub target" });
       }
