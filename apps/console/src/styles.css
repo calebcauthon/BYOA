@@ -330,7 +330,8 @@ h1 { font-size: 19px; letter-spacing: -.025em; line-height: 1.2; margin: 5px 0 7
 .publish-body strong { font-size: 11px; }
 .publish-body small { color: var(--text-3); font: 9px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .publish-body code { color: var(--text-2); font: 9px var(--mono); }
-.publish-link { margin-left: auto; display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 9px; font-weight: 600; text-decoration: none; }
+.publish-links { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.publish-link { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 9px; font-weight: 600; text-decoration: none; }
 .publish-link:hover { background: var(--surface-raised); border-color: oklch(0.39 0.012 142); }
 .artifact-strip { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0 2px 41px; }
 .artifact-card { margin: 0; max-width: 340px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); overflow: hidden; background: var(--surface); }

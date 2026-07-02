@@ -127,12 +127,19 @@ function launchSession(convId: string, input: StartSessionInput, target: Target)
         // branch if one was created, else the cloned branch) and open the PR
         // against the cloned base. For local the target branch is the push branch.
         const target = conv.target;
-        const branch = target.kind === "remote" ? target.newBranch ?? target.branch : target.branch;
+        const branch = target.newBranch ?? target.branch;
         const base = target.kind === "remote" ? target.branch : undefined;
         publishBranch = branch;
         try {
           outcome = await ghPublish(
-            { backend: ctx.backend, workdir: ctx.workdir, branch, ...(base ? { base } : {}), result },
+            {
+              backend: ctx.backend,
+              workdir: ctx.workdir,
+              branch,
+              ...(base ? { base } : {}),
+              ...(target.kind === "remote" ? { repo: target.repo } : {}),
+              result,
+            },
             ctx.log,
           );
         } catch (err) {

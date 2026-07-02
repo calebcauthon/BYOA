@@ -32,7 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 type RunState = "running" | "ready" | "failed" | "queued" | "stopped";
 type BackendKind = "local" | "container" | "daytona";
 type ProviderKind = "pi" | "claude-subscription" | "codex";
-type Target = { kind: "local"; repoPath: string; branch: string } | { kind: "remote"; repo: string; issue?: number; branch: string; newBranch?: string };
+type Target = { kind: "local"; repoPath: string; branch: string; newBranch?: string } | { kind: "remote"; repo: string; issue?: number; branch: string; newBranch?: string };
 
 interface AgentSessionSettings {
   backend: string;
@@ -337,7 +337,7 @@ function targetLabel(target: Target): string {
 }
 
 function targetBranch(target: Target): string {
-  return target.branch;
+  return target.newBranch ?? target.branch;
 }
 
 function providerLabel(provider: string): string {
@@ -409,6 +409,7 @@ const PUBLISH_SKIP_LABEL: Record<string, string> = {
   "head-equals-base": "no PR — head equals base",
   "no-change": "agent made no changes",
   "no-origin": "checkout has no GitHub origin",
+  "origin-mismatch": "checkout origin did not match the selected repository",
   "no-token": "no GitHub token (gh auth)",
   "push-failed": "push failed",
   "pr-failed": "PR creation failed",
@@ -431,10 +432,15 @@ function SessionArtifacts({ conversationId, sessionId, artifacts }: { conversati
   );
 }
 
-function PublishCard({ event }: { event: EventRecord }) {
+function PublishCard({ event, target }: { event: EventRecord; target: Target }) {
   const data = event.data ?? {};
   const pushed = data.pushed === true;
   const branch = typeof data.branch === "string" ? data.branch : undefined;
+  const branchUrl = typeof data.branchUrl === "string"
+    ? data.branchUrl
+    : pushed && branch && target.kind === "remote"
+      ? `https://github.com/${target.repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`
+      : undefined;
   const prUrl = typeof data.prUrl === "string" ? data.prUrl : undefined;
   const comments = typeof data.commentsPosted === "number" ? data.commentsPosted : 0;
   const skipped = typeof data.skipped === "string" ? data.skipped : undefined;
@@ -457,7 +463,12 @@ function PublishCard({ event }: { event: EventRecord }) {
         <strong>{failed ? "Publish failed" : prUrl ? "Opened draft PR" : pushed ? "Pushed branch" : "Nothing published"}</strong>
         <small>{branch && <code>{branch}</code>}{branch && detail ? " · " : ""}{detail}</small>
       </div>
-      {prUrl && <a className="publish-link" href={prUrl} target="_blank" rel="noreferrer">View PR <ArrowUpRight size={12} /></a>}
+      {(branchUrl || prUrl) && (
+        <div className="publish-links">
+          {branchUrl && <a className="publish-link" href={branchUrl} target="_blank" rel="noreferrer">View branch <ArrowUpRight size={12} /></a>}
+          {prUrl && <a className="publish-link" href={prUrl} target="_blank" rel="noreferrer">View PR <ArrowUpRight size={12} /></a>}
+        </div>
+      )}
     </div>
   );
 }
@@ -1335,7 +1346,7 @@ function NewRunView({
     branchName: "auto/m4-console-run",
     provider: lastUsedPreset?.provider ?? "pi",
     model: lastUsedPreset?.model ?? options.providers[0]?.models[0] ?? "anthropic/claude-haiku-4.5",
-    backend: savedCodeSettings?.targetKind === "remote" ? "daytona" : (lastUsedPreset?.backend ?? "local"),
+    backend: lastUsedPreset?.backend ?? (savedCodeSettings?.targetKind === "remote" ? "daytona" : "local"),
     agent: lastUsedPreset?.agent ?? "generic",
     prompt: "",
     publish: true,
@@ -1507,16 +1518,15 @@ function NewRunView({
 
   const providerModels = options.providers.find((p) => p.id === form.provider)?.models ?? [form.model];
   const isRemote = form.targetKind === "remote";
-  const branchTarget = form.newBranch ? form.branchName : form.branch;
+  const branchTarget = form.newBranch ? "automatic branch" : form.branch;
   const codeLocation = isRemote
     ? (form.repo || "Choose a GitHub repository")
     : (form.repoPath.split("/").filter(Boolean).at(-1) || "Choose a local folder");
   const codeBranchSummary = form.newBranch
-    ? `${form.branch || "main"} → new ${form.branchName || "branch"}`
+    ? `${form.branch || "main"} → automatic new branch`
     : form.branch || "Choose a branch";
   const runAction = runActionCopy(form);
-  // Remote (GitHub) checkouts are only materialized by the daytona backend.
-  const backendOptions = isRemote ? options.backends.filter((b) => b === "daytona") : options.backends;
+  const backendOptions = isRemote ? options.backends.filter((backend) => backend !== "container") : options.backends;
 
   const patch = (next: Partial<LaunchForm>) => setForm((current) => ({ ...current, ...next }));
 
@@ -1600,8 +1610,7 @@ function NewRunView({
     setInstructionModalPresetId(null);
   };
 
-  const chooseTargetKind = (kind: "local" | "remote") =>
-    patch(kind === "remote" ? { targetKind: "remote", backend: "daytona" } : { targetKind: "local" });
+  const chooseTargetKind = (kind: "local" | "remote") => patch({ targetKind: kind });
 
   const submit = async () => {
     setLaunching(true);
@@ -1803,13 +1812,8 @@ function NewRunView({
               <label className="branch-toggle">
                 <input type="checkbox" checked={form.newBranch} onChange={(event) => patch({ newBranch: event.target.checked })} />
                 <span className="toggle-track"><i /></span>
-                <span><strong>Create a new branch</strong><small>{form.newBranch ? form.branchName : `work on ${form.branch}`}</small></span>
+                <span><strong>Create a new branch</strong><small>{form.newBranch ? "name generated when the run starts" : `work on ${form.branch}`}</small></span>
               </label>
-              {form.newBranch && (
-                <div className="field-grid single-field">
-                  <FieldInput label="New branch name" value={form.branchName} onChange={(branchName) => patch({ branchName })} icon={<GitBranch size={14} />} />
-                </div>
-              )}
               <label className="branch-toggle publish-toggle">
                 <input type="checkbox" checked={form.publish} onChange={(event) => patch({ publish: event.target.checked })} />
                 <span className="toggle-track"><i /></span>
@@ -1923,7 +1927,7 @@ function sessionMarkdown(session: AgentSession, index: number, entries: Timeline
     `- Backend: ${backendLabel(session.settings.backend)}`,
     `- Agent: ${session.settings.agent}`,
     `- Target: ${targetLabel(target)} (${target.kind})`,
-    `- Branch: ${targetBranch(target)}${target.kind === "remote" && target.newBranch ? ` → ${target.newBranch}` : ""}`,
+    `- Branch: ${target.branch}${target.newBranch ? ` → ${target.newBranch}` : ""}`,
     `- Status: ${session.status}`,
     `- Session ID: \`${session.id}\``,
   ];
@@ -2266,7 +2270,7 @@ function ConversationView({
               <SessionCard session={session} index={index} entries={entriesBySession.get(session.id) ?? []} />
               <TimelineForSession entries={entriesBySession.get(session.id) ?? []} prompt={session.prompt?.task || session.prompt?.assembled || ""} label={providerLabel(session.settings.provider)} />
               {session.artifacts?.length ? <SessionArtifacts conversationId={rendered.conversation.id} sessionId={session.id} artifacts={session.artifacts} /> : null}
-              {(() => { const pub = publishEventFor(rendered.events, session.id); return pub ? <PublishCard event={pub} /> : null; })()}
+              {(() => { const pub = publishEventFor(rendered.events, session.id); return pub ? <PublishCard event={pub} target={rendered.conversation.target} /> : null; })()}
             </div>
           )) : (
             <div className="empty-state">
@@ -2401,20 +2405,23 @@ function App() {
   };
 
   const launch = async (form: LaunchForm, persona?: string) => {
-    const newBranchName = form.newBranch ? form.branchName.trim() : "";
     const issue = form.issue.trim();
     const target: Target = form.targetKind === "remote"
       ? {
           kind: "remote",
           repo: form.repo.trim(),
           branch: form.branch,
-          ...(newBranchName ? { newBranch: newBranchName } : {}),
           ...(/^\d+$/.test(issue) ? { issue: Number(issue) } : {}),
         }
-      : { kind: "local", repoPath: form.repoPath, branch: newBranchName || form.branch };
+      : { kind: "local", repoPath: form.repoPath, branch: form.branch };
     const conv = await api<Conversation>("/api/conversations", {
       method: "POST",
-      body: JSON.stringify({ title: form.title || form.prompt.split("\n")[0] || "Agent run", target }),
+      body: JSON.stringify({
+        title: form.title || form.prompt.split("\n")[0] || "Agent run",
+        target,
+        createNewBranch: form.newBranch,
+        branchPrompt: form.prompt,
+      }),
     });
     await api<{ sessionId: string }>(`/api/conversations/${encodeURIComponent(conv.id)}/sessions`, {
       method: "POST",

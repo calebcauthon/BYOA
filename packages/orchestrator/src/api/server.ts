@@ -261,6 +261,53 @@ async function generateInstruction(description: string): Promise<string> {
   return body;
 }
 
+function branchFallback(task: string): string {
+  const words = task
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/[\s-]+/)
+    .filter(Boolean)
+    .slice(0, 4)
+    .join("-");
+  return words || "agent-change";
+}
+
+async function generateBranchName(task: string): Promise<string> {
+  let slug = "";
+  const key = process.env.OPENROUTER_API_KEY;
+  if (key) {
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        signal: AbortSignal.timeout(8_000),
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model: "anthropic/claude-haiku-4.5",
+          max_tokens: 40,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Create a concise git branch slug describing the requested work. Output only 2-5 lowercase ASCII words joined by hyphens. No prefix, punctuation, quotes, markdown, or explanation.",
+            },
+            { role: "user", content: task.slice(0, 2_000) },
+          ],
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+        const candidate = data.choices?.[0]?.message?.content?.trim() ?? "";
+        if (/^[a-z0-9]+(?:-[a-z0-9]+){1,4}$/.test(candidate) && candidate.length <= 48) slug = candidate;
+      }
+    } catch {
+      // Branch naming must never prevent a run; use the deterministic fallback.
+    }
+  }
+  if (!slug) slug = branchFallback(task);
+  const suffix = `${Date.now().toString(36).slice(-3)}${Math.random().toString(36).slice(2, 5)}`;
+  return `auto/${slug.slice(0, 48).replace(/-+$/g, "")}-${suffix}`;
+}
+
 function cleanBranch(raw: string): string | null {
   const branch = raw.trim().replace(/^remotes\//, "");
   if (!branch || branch.includes("HEAD ->")) return null;
@@ -465,7 +512,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (method === "GET") return send(res, 200, list());
     if (method === "POST") {
       const body = await readBody(req);
-      return send(res, 201, createConversation({ title: String(body["title"] ?? "untitled"), target: body["target"] as Target }));
+      const requestedTarget = body["target"] as Target;
+      const target = body["createNewBranch"] === true
+        ? { ...requestedTarget, newBranch: await generateBranchName(String(body["branchPrompt"] ?? body["title"] ?? "agent change")) }
+        : requestedTarget;
+      return send(res, 201, createConversation({ title: String(body["title"] ?? "untitled"), target }));
     }
   }
 
