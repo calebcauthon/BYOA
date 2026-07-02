@@ -2148,8 +2148,6 @@ function TimelineForSession({ entries, prompt, label = "Agent trace" }: { entrie
   const [traceCollapsed, setTraceCollapsed] = useState(false);
   const infra = entries.filter((entry) => entry.source === "orchestrator" || entry.source === "backend" || entry.source === "workflow");
   const main = entries.filter((entry) => entry.source === "agent" || entry.source === "workload");
-  const firstInfra = infra.slice(0, 2);
-  const hiddenInfra = infra.slice(2);
   const mainGroups: Array<TimelineEntry | TimelineEntry[]> = [];
   for (const entry of main) {
     if (isToolEntry(entry)) {
@@ -2165,16 +2163,11 @@ function TimelineForSession({ entries, prompt, label = "Agent trace" }: { entrie
     <>
       {infra.length > 0 && (
         <div className="orchestrator-group">
-          {firstInfra.map((entry) => <LogEntryView entry={entry} key={`${entry.ts}-${entry.message}`} />)}
-          {hiddenInfra.length > 0 && (
-            <>
-              <button className="orchestrator-more" onClick={() => setInfraOpen((v) => !v)}>
-                <ChevronRight size={12} className={infraOpen ? "rotated" : ""} />
-                {infraOpen ? "Hide orchestration details" : `${hiddenInfra.length} more orchestration events`}
-              </button>
-              {infraOpen && <div className="orchestrator-extra">{hiddenInfra.map((entry) => <LogEntryView entry={entry} key={`${entry.ts}-${entry.message}`} />)}</div>}
-            </>
-          )}
+          <button className="orchestrator-more" onClick={() => setInfraOpen((v) => !v)}>
+            <ChevronRight size={12} className={infraOpen ? "rotated" : ""} />
+            {infraOpen ? "Hide orchestration details" : `${infra.length} orchestration event${infra.length === 1 ? "" : "s"}`}
+          </button>
+          {infraOpen && <div className="orchestrator-extra">{infra.map((entry) => <LogEntryView entry={entry} key={`${entry.ts}-${entry.message}`} />)}</div>}
         </div>
       )}
 
