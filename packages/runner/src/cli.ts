@@ -39,6 +39,9 @@ interface SessionSpec {
   respectIgnore?: IgnoreKind[];
   prompt?: string;
   promptFile?: string;
+  /** images to attach to the prompt — data URLs or filesystem paths. Materialized
+   *  into the backend so the agent can read them. */
+  images?: string[];
   out?: string;
   dryRun?: boolean;
 }
@@ -105,14 +108,20 @@ async function main(): Promise<void> {
   const sessionId = `sess-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const dryRun = spec.dryRun || flags.includes("--dry-run");
 
+  const images = spec.images && spec.images.length > 0 ? spec.images : undefined;
+
   if (dryRun) {
     process.stdout.write(
-      JSON.stringify({ plan: "dry-run", sessionId, outDir, settings, promptBytes: prompt!.length }, null, 2) + "\n",
+      JSON.stringify(
+        { plan: "dry-run", sessionId, outDir, settings, promptBytes: prompt!.length, ...(images ? { images: images.length } : {}) },
+        null,
+        2,
+      ) + "\n",
     );
     return;
   }
 
-  const result = await runSession({ sessionId, settings, prompt: prompt!, outDir });
+  const result = await runSession({ sessionId, settings, prompt: prompt!, outDir, ...(images ? { images } : {}) });
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
 }
 

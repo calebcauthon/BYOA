@@ -13,7 +13,6 @@ import {
   FolderGit2,
   GitBranch,
   Github,
-  ImagePlus,
   Link2,
   MoreHorizontal,
   PanelLeftClose,
@@ -28,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ImageStrip, pasteHasImages, useImageAttachments } from "./imageAttachments";
 
 type RunState = "running" | "ready" | "failed" | "queued" | "stopped";
 type BackendKind = "local" | "container" | "daytona";
@@ -1338,7 +1338,7 @@ function NewRunView({
   initial,
 }: {
   options: OptionsPayload;
-  onLaunch: (form: LaunchForm, persona?: string) => Promise<void>;
+  onLaunch: (form: LaunchForm, persona?: string, images?: string[]) => Promise<void>;
   initial?: Partial<LaunchForm> | undefined;
 }) {
   const [presets, setPresets] = useState<RobotPreset[]>(() => loadRobotPresets());
@@ -1371,6 +1371,7 @@ function NewRunView({
     ...initial,
   }));
   const [skills, setSkills] = useState(() => (!initial && lastUsedPreset ? [...lastUsedPreset.skills] : ["browser"]));
+  const attachments = useImageAttachments();
   // The base branch we last auto-seeded from a repo's default, so a repo switch can
   // overwrite our own guess but never a base branch the operator typed by hand.
   const autoBranchRef = useRef<string | null>(null);
@@ -1660,7 +1661,7 @@ function NewRunView({
     setLaunching(true);
     setError(null);
     try {
-      await onLaunch(form, instructionBody.trim() || undefined);
+      await onLaunch(form, instructionBody.trim() || undefined, attachments.images.map((img) => img.dataUrl));
     } catch (err) {
       setError(String(err));
     } finally {
@@ -1888,12 +1889,18 @@ function NewRunView({
               <textarea
                 value={form.prompt}
                 onChange={(event) => patch({ prompt: event.target.value, title: event.target.value.split("\n")[0]?.slice(0, 80) || form.title })}
+                onPaste={(event) => {
+                  const pics = pasteHasImages(event);
+                  if (pics.length) {
+                    event.preventDefault();
+                    void attachments.addFiles(pics);
+                  }
+                }}
                 placeholder="Describe what you want the agent to change…"
                 aria-label="Agent prompt"
               />
               <div className="prompt-toolbar">
-                <button type="button"><ImagePlus size={14} /> Add images</button>
-                <span>Paste screenshots support is reserved for artifact plumbing</span>
+                <ImageStrip attachments={attachments} />
                 <span className="prompt-count">{form.prompt.length}</span>
               </div>
             </div>
@@ -2212,7 +2219,7 @@ function ConversationView({
   onFork,
 }: {
   rendered: RenderedConversation;
-  onContinue: (task: string, latest: AgentSession) => Promise<void>;
+  onContinue: (task: string, latest: AgentSession, images?: string[]) => Promise<void>;
   onRefresh: () => void;
   onFork: () => void;
 }) {
@@ -2222,6 +2229,7 @@ function ConversationView({
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const attachments = useImageAttachments();
 
   const state = deriveRunState(rendered.conversation, rendered);
   const latest = rendered.sessions.at(-1);
@@ -2267,12 +2275,13 @@ function ConversationView({
   };
 
   const submitContinue = async () => {
-    if (!latest || !composer.trim()) return;
+    if (!latest || (!composer.trim() && attachments.images.length === 0)) return;
     setSending(true);
     setError(null);
     try {
-      await onContinue(composer, latest);
+      await onContinue(composer, latest, attachments.images.map((img) => img.dataUrl));
       setComposer("");
+      attachments.clear();
       onRefresh();
     } catch (err) {
       setError(String(err));
@@ -2340,14 +2349,22 @@ function ConversationView({
           <textarea
             value={composer}
             onChange={(e) => setComposer(e.target.value)}
+            onPaste={(e) => {
+              const pics = pasteHasImages(e);
+              if (pics.length) {
+                e.preventDefault();
+                void attachments.addFiles(pics);
+              }
+            }}
             placeholder="Continue this conversation…"
             aria-label="Continue this conversation"
             rows={1}
           />
+          <div className="composer-attachments"><ImageStrip attachments={attachments} disabled={!latest} /></div>
           <div className="composer-row">
             <button className="runtime-chip" disabled><Bot size={12} /> {latest ? `${providerLabel(latest.settings.provider)} · ${latest.settings.model}` : "No session"} <ChevronDown size={11} /></button>
             <span>{error ?? (latest ? `Inherited from session ${String(rendered.sessions.length).padStart(2, "0")}` : "Start a session first")}</span>
-            <button className="send-button" disabled={!composer.trim() || !latest || sending} onClick={submitContinue}><ArrowUpRight size={15} /></button>
+            <button className="send-button" disabled={(!composer.trim() && attachments.images.length === 0) || !latest || sending} onClick={submitContinue}><ArrowUpRight size={15} /></button>
           </div>
         </div>
       </div>
@@ -2448,7 +2465,7 @@ function App() {
     window.history.pushState(null, "", "/new");
   };
 
-  const launch = async (form: LaunchForm, persona?: string) => {
+  const launch = async (form: LaunchForm, persona?: string, images?: string[]) => {
     const issue = form.issue.trim();
     const target: Target = form.targetKind === "remote"
       ? {
@@ -2478,6 +2495,7 @@ function App() {
         },
         task: form.prompt,
         ...(persona ? { persona } : {}),
+        ...(images && images.length ? { images } : {}),
         publish: form.publish,
         qaReview: form.qaReview,
       }),
@@ -2486,7 +2504,7 @@ function App() {
     selectConversation(conv.id);
   };
 
-  const continueConversation = async (task: string, latest: AgentSession) => {
+  const continueConversation = async (task: string, latest: AgentSession, images?: string[]) => {
     if (!rendered) return;
     await api<{ sessionId: string }>(`/api/conversations/${encodeURIComponent(rendered.conversation.id)}/sessions`, {
       method: "POST",
@@ -2499,6 +2517,7 @@ function App() {
           carryContext: latest.settings.carryContext,
         },
         task,
+        ...(images && images.length ? { images } : {}),
       }),
     });
     await loadConversation(rendered.conversation.id);

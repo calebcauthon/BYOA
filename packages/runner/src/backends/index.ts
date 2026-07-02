@@ -99,6 +99,11 @@ export interface Backend {
    *  readDir which is text). Used to pull published artifacts — e.g. a QA
    *  screenshot — out of the backend before it is disposed. */
   readBytes(path: string, log: SessionLog): Promise<Buffer>;
+  /** Write raw bytes to a file inside the backend (binary-safe inverse of
+   *  readBytes). Used to seed inputs the agent should be able to read — e.g.
+   *  images the operator attached to the prompt. `path`'s parent directory is
+   *  expected to already exist (callers write into the prepared scratch dir). */
+  writeBytes(path: string, bytes: Buffer, log: SessionLog): Promise<void>;
   /** tear down (or keep, for debugging) */
   dispose(log: SessionLog): Promise<void>;
 }

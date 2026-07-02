@@ -11,7 +11,7 @@
  *   GET  /api/conversations                                                   → Conversation[]
  *   GET  /api/conversations/:id                                              → RenderedConversation
  *   GET  /api/conversations/:id/timeline                                     → LogEntry[] (unified)
- *   POST /api/conversations/:id/sessions         { settings, task|prompt }    → { sessionId }
+ *   POST /api/conversations/:id/sessions         { settings, task|prompt, images? } → { sessionId }
  */
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
