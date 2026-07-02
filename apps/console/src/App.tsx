@@ -438,6 +438,17 @@ function PublishCard({ event, target }: { event: EventRecord; target: Target }) 
   const data = event.data ?? {};
   const pushed = data.pushed === true;
   const branch = typeof data.branch === "string" ? data.branch : undefined;
+  const [copied, setCopied] = useState(false);
+  const copyBranch = async () => {
+    if (!branch) return;
+    try {
+      await navigator.clipboard.writeText(branch);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
   const branchUrl = typeof data.branchUrl === "string"
     ? data.branchUrl
     : pushed && branch && target.kind === "remote"
@@ -463,7 +474,11 @@ function PublishCard({ event, target }: { event: EventRecord; target: Target }) 
       <span className="publish-icon">{failed ? <CircleStop size={14} /> : <GitBranch size={14} />}</span>
       <div className="publish-body">
         <strong>{failed ? "Publish failed" : prUrl ? "Opened draft PR" : pushed ? "Pushed branch" : "Nothing published"}</strong>
-        <small>{branch && <code>{branch}</code>}{branch && detail ? " · " : ""}{detail}</small>
+        <small>{branch && <code>{branch}</code>}{branch && (
+          <button className="branch-copy" onClick={() => void copyBranch()} title="Copy branch name" aria-label="Copy branch name">
+            {copied ? <Check size={11} /> : <Copy size={11} />}
+          </button>
+        )}{branch && detail ? " · " : ""}{detail}</small>
       </div>
       {(branchUrl || prUrl) && (
         <div className="publish-links">
