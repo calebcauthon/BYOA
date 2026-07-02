@@ -1371,6 +1371,9 @@ function NewRunView({
     ...initial,
   }));
   const [skills, setSkills] = useState(() => (!initial && lastUsedPreset ? [...lastUsedPreset.skills] : ["browser"]));
+  // The base branch we last auto-seeded from a repo's default, so a repo switch can
+  // overwrite our own guess but never a base branch the operator typed by hand.
+  const autoBranchRef = useRef<string | null>(null);
 
   // Instruction (system prompt) library — server-owned. `instructionBody` is the
   // live text sent as the run's persona; it diverges from the saved copy once
@@ -1407,6 +1410,31 @@ function NewRunView({
       active = false;
     };
   }, [codeDefaultsReady]);
+
+  // Seed "Base branch" with the selected repo's real default (not a hardcoded
+  // "main"). Only replaces a branch the operator hasn't chosen: still empty, still
+  // the placeholder "main", or still our own last auto-fill.
+  useEffect(() => {
+    if (form.targetKind !== "remote" || !form.repo) return;
+    let active = true;
+    const repoAtFetch = form.repo;
+    api<{ repo: string; defaultBranch: string }>(`/api/github/default-branch?repo=${encodeURIComponent(form.repo)}`)
+      .then((payload) => {
+        if (!active || !payload.defaultBranch) return;
+        setForm((current) => {
+          if (current.repo !== repoAtFetch) return current;
+          const untouched = !current.branch || current.branch === "main" || current.branch === autoBranchRef.current;
+          if (!untouched) return current;
+          autoBranchRef.current = payload.defaultBranch;
+          return { ...current, branch: payload.defaultBranch };
+        });
+      })
+      .catch(() => {
+        // Repo default unavailable (no access / not installed): keep the current
+        // value; the operator can still type the base branch by hand.
+      });
+    return () => { active = false; };
+  }, [form.repo, form.targetKind]);
 
   useEffect(() => {
     if (codeDefaultsReady && !initial) saveCodeSettings(form);

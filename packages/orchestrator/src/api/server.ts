@@ -247,6 +247,17 @@ async function fetchIssues(repo: string): Promise<GhIssue[]> {
   }));
 }
 
+// The repo's default branch, as the gh-authed user sees it. Used to seed the
+// console's "Base branch" field instead of assuming "main".
+async function fetchDefaultBranch(repo: string): Promise<string> {
+  const { stdout } = await execFileAsync(
+    "gh",
+    ["repo", "view", repo, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+    { timeout: 30_000, maxBuffer: 1024 * 1024 },
+  );
+  return stdout.trim();
+}
+
 // Turn a short natural-language description into a system prompt via OpenRouter
 // (Haiku — cheap + fast for prompt-writing). Reuses OPENROUTER_API_KEY, the same
 // key the pi provider consumes; no extra dependency (global fetch, Node 18+).
@@ -511,6 +522,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return send(res, 409, { error: String(err), installationRequired: true });
     }
   }
+  if (
+    identity instanceof HostedIdentity &&
+    parts[0] === "github" &&
+    parts[1] === "default-branch" &&
+    method === "GET"
+  ) {
+    const repo = (url.searchParams.get("repo") ?? "").trim();
+    if (!repo) return send(res, 400, { error: "repo is required" });
+    try {
+      return send(res, 200, { repo, defaultBranch: await identity.githubDefaultBranch(principal.id, repo) });
+    } catch (err) {
+      return send(res, 409, { error: String(err), installationRequired: true });
+    }
+  }
   if (identity.kind === "hosted" && parts[0] === "github") {
     return send(res, 501, { error: "GitHub repository access requires the GitHub App installation phase" });
   }
@@ -657,6 +682,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return send(res, 200, { repo, issues: await fetchIssues(repo) });
     } catch (err) {
       return send(res, 400, { error: `gh issue list failed: ${String(err)}` });
+    }
+  }
+  // /api/github/default-branch?repo=owner/name — the repo's default branch, so the
+  // console seeds "Base branch" with the real default instead of assuming main.
+  if (parts[0] === "github" && parts[1] === "default-branch" && parts.length === 2 && method === "GET") {
+    const repo = (url.searchParams.get("repo") ?? "").trim();
+    if (!repo) return send(res, 400, { error: "repo is required" });
+    try {
+      return send(res, 200, { repo, defaultBranch: await fetchDefaultBranch(repo) });
+    } catch (err) {
+      return send(res, 400, { error: `gh repo view failed: ${String(err)}` });
     }
   }
 

@@ -443,6 +443,18 @@ export class HostedIdentity implements Identity {
       .map((issue) => ({ number: issue.number, title: issue.title, url: issue.html_url }));
   }
 
+  async githubDefaultBranch(userId: string, repo: string): Promise<string> {
+    const owner = repo.split("/")[0] ?? "";
+    const installation = await this.installationForOwner(userId, owner);
+    if (!installation) throw new Error(`GitHub App is not installed for ${owner}`);
+    const token = await this.installationToken(installation.installationId);
+    const details = await this.githubAppRequest<{ default_branch?: string }>(
+      `/repos/${repo}`,
+      { token },
+    );
+    return details.default_branch ?? "";
+  }
+
   logStatus(write: (line: string) => void): void {
     write("identity: hosted (Postgres + GitHub/Google SSO + API keys)\n");
   }
